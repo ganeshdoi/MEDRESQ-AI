@@ -1,0 +1,11 @@
+{
+  "name": "MEDRESQ AI ",
+  "description": "Predictive healthcare resource management, inventory forecasting, facility capacity, and seasonal preparedness platform for Primary Health Centres.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
