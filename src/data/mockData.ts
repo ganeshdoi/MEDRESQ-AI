@@ -1,4 +1,4 @@
-import {
+import type {
   PHCFacility,
   MedicineItem,
   CapacityRecord,
@@ -12,345 +12,15 @@ import {
   ExtractedOCRRecord
 } from '../types.ts';
 
-export const FACILITIES: PHCFacility[] = [
-  {
-    id: 'phc-osian',
-    name: 'PHC Osian (24x7)',
-    code: 'RJ-JDP-PHC-021',
-    block: 'Osian',
-    district: 'Jodhpur',
-    state: 'Rajasthan',
-    type: '24x7 PHC',
-    sanctionedBeds: 20,
-    activeBeds: 20,
-    occupiedBeds: 17,
-    distanceKmFromDistrictHQ: 64,
-    contactNumber: '+91 2927 220112',
-    medicalOfficerInCharge: 'Dr. Suresh Chandra Bishnoi',
-    subCentresCovered: 8,
-    populationServed: 42500
-  },
-  {
-    id: 'phc-mandore',
-    name: 'PHC Mandore',
-    code: 'RJ-JDP-PHC-014',
-    block: 'Mandore',
-    district: 'Jodhpur',
-    state: 'Rajasthan',
-    type: 'PHC',
-    sanctionedBeds: 16,
-    activeBeds: 16,
-    occupiedBeds: 5,
-    distanceKmFromDistrictHQ: 9,
-    contactNumber: '+91 291 2570889',
-    medicalOfficerInCharge: 'Dr. Anita Choudhary',
-    subCentresCovered: 6,
-    populationServed: 36800
-  },
-  {
-    id: 'phc-balesar',
-    name: 'PHC Balesar',
-    code: 'RJ-JDP-PHC-032',
-    block: 'Balesar',
-    district: 'Jodhpur',
-    state: 'Rajasthan',
-    type: 'PHC',
-    sanctionedBeds: 18,
-    activeBeds: 18,
-    occupiedBeds: 12,
-    distanceKmFromDistrictHQ: 72,
-    contactNumber: '+91 2929 242019',
-    medicalOfficerInCharge: 'Dr. Vikram Rathore',
-    subCentresCovered: 7,
-    populationServed: 39100
-  },
-  {
-    id: 'phc-bilara',
-    name: 'PHC Bilara',
-    code: 'RJ-JDP-PHC-045',
-    block: 'Bilara',
-    district: 'Jodhpur',
-    state: 'Rajasthan',
-    type: '24x7 PHC',
-    sanctionedBeds: 24,
-    activeBeds: 24,
-    occupiedBeds: 14,
-    distanceKmFromDistrictHQ: 78,
-    contactNumber: '+91 2930 222144',
-    medicalOfficerInCharge: 'Dr. Priya Sharma',
-    subCentresCovered: 10,
-    populationServed: 54000
-  },
-  {
-    id: 'phc-luni',
-    name: 'PHC Luni',
-    code: 'RJ-JDP-PHC-008',
-    block: 'Luni',
-    district: 'Jodhpur',
-    state: 'Rajasthan',
-    type: 'PHC',
-    sanctionedBeds: 14,
-    activeBeds: 14,
-    occupiedBeds: 7,
-    distanceKmFromDistrictHQ: 38,
-    contactNumber: '+91 2931 234055',
-    medicalOfficerInCharge: 'Dr. Mahendra Gehlot',
-    subCentresCovered: 5,
-    populationServed: 31200
-  }
-];
+import { INDIA_PHC_DIRECTORY } from './indiaPHCDirectory.ts';
+import { generateEssentialMedicinesForPHC } from './nationalEssentialMedicines.ts';
 
-export const INITIAL_MEDICINES: MedicineItem[] = [
-  {
-    id: 'med-ors-osian',
-    phcId: 'phc-osian',
-    name: 'Oral Rehydration Salts (ORS) Sachets 20.5g',
-    category: 'Essential ORS/Fluids',
-    unit: 'Sachets',
-    currentStock: 210,
-    dailyConsumption: 58,
-    weeklyConsumption: 390,
-    minStockLevel: 500,
-    maxStockLevel: 2500,
-    batchNumber: 'ORS-RJ-2604',
-    expiryDate: '2027-08-31',
-    pendingOrders: 500,
-    expectedDeliveryDate: '2026-09-26',
-    sourceWarehouse: 'District Drug Warehouse Mandore (RMSCL)',
-    projectedStockoutDays: 3.6,
-    stockoutRisk: 'CRITICAL',
-    predictedSurplus: 0,
-    forecast7Day: 460,
-    forecast30Day: 1850,
-    fefoPriority: 'NORMAL'
-  },
-  {
-    id: 'med-ns-osian',
-    phcId: 'phc-osian',
-    name: 'Normal Saline (0.9% NaCl) IV Infusion 500ml',
-    category: 'Essential ORS/Fluids',
-    unit: 'Bottles',
-    currentStock: 64,
-    dailyConsumption: 16,
-    weeklyConsumption: 110,
-    minStockLevel: 100,
-    maxStockLevel: 500,
-    batchNumber: 'NS-IV-998',
-    expiryDate: '2027-07-31',
-    pendingOrders: 200,
-    expectedDeliveryDate: '2026-09-24',
-    sourceWarehouse: 'District Drug Warehouse Mandore (RMSCL)',
-    projectedStockoutDays: 4.0,
-    stockoutRisk: 'CRITICAL',
-    predictedSurplus: 0,
-    forecast7Day: 135,
-    forecast30Day: 580,
-    fefoPriority: 'NORMAL'
-  },
-  {
-    id: 'med-rl-osian',
-    phcId: 'phc-osian',
-    name: 'Ringer Lactate (RL) IV Infusion 500ml',
-    category: 'Essential ORS/Fluids',
-    unit: 'Bottles',
-    currentStock: 48,
-    dailyConsumption: 12,
-    weeklyConsumption: 80,
-    minStockLevel: 80,
-    maxStockLevel: 400,
-    batchNumber: 'RL-RJ-512',
-    expiryDate: '2027-09-15',
-    pendingOrders: 150,
-    expectedDeliveryDate: '2026-09-25',
-    sourceWarehouse: 'District Drug Warehouse Mandore (RMSCL)',
-    projectedStockoutDays: 4.0,
-    stockoutRisk: 'CRITICAL',
-    predictedSurplus: 0,
-    forecast7Day: 98,
-    forecast30Day: 420,
-    fefoPriority: 'NORMAL'
-  },
-  {
-    id: 'med-pcm-osian',
-    phcId: 'phc-osian',
-    name: 'Paracetamol Tablets IP 500mg',
-    category: 'Analgesics',
-    unit: 'Tablets',
-    currentStock: 4200,
-    dailyConsumption: 190,
-    weeklyConsumption: 1300,
-    minStockLevel: 1500,
-    maxStockLevel: 8000,
-    batchNumber: 'PCM-T-440',
-    expiryDate: '2026-11-30', // Expiring soon in ~68 days!
-    pendingOrders: 0,
-    sourceWarehouse: 'District Drug Warehouse Mandore (RMSCL)',
-    projectedStockoutDays: 22.1,
-    stockoutRisk: 'NORMAL',
-    predictedSurplus: 0,
-    forecast7Day: 1330,
-    forecast30Day: 5700,
-    fefoPriority: 'EXPIRING_SOON'
-  },
-  {
-    id: 'med-amox-osian',
-    phcId: 'phc-osian',
-    name: 'Amoxicillin Capsules IP 500mg',
-    category: 'Antibiotics',
-    unit: 'Capsules',
-    currentStock: 820,
-    dailyConsumption: 65,
-    weeklyConsumption: 440,
-    minStockLevel: 600,
-    maxStockLevel: 3000,
-    batchNumber: 'AMX-C-881',
-    expiryDate: '2027-12-31',
-    pendingOrders: 500,
-    expectedDeliveryDate: '2026-09-28',
-    sourceWarehouse: 'District Drug Warehouse Mandore (RMSCL)',
-    projectedStockoutDays: 12.6,
-    stockoutRisk: 'NORMAL',
-    predictedSurplus: 0,
-    forecast7Day: 460,
-    forecast30Day: 1950,
-    fefoPriority: 'NORMAL'
-  },
-  {
-    id: 'med-zinc-osian',
-    phcId: 'phc-osian',
-    name: 'Zinc Sulfate Dispersible Tablets 20mg',
-    category: 'Maternal & Child',
-    unit: 'Tablets',
-    currentStock: 340,
-    dailyConsumption: 42,
-    weeklyConsumption: 290,
-    minStockLevel: 400,
-    maxStockLevel: 2000,
-    batchNumber: 'ZNC-D-102',
-    expiryDate: '2027-09-30',
-    pendingOrders: 500,
-    expectedDeliveryDate: '2026-09-27',
-    sourceWarehouse: 'District Drug Warehouse Mandore (RMSCL)',
-    projectedStockoutDays: 8.0,
-    stockoutRisk: 'WARNING',
-    predictedSurplus: 0,
-    forecast7Day: 310,
-    forecast30Day: 1300,
-    fefoPriority: 'NORMAL'
-  },
-  {
-    id: 'med-cetz-osian',
-    phcId: 'phc-osian',
-    name: 'Cetirizine Hydrochloride Tablets 10mg',
-    category: 'Analgesics',
-    unit: 'Tablets',
-    currentStock: 2900,
-    dailyConsumption: 30,
-    weeklyConsumption: 210,
-    minStockLevel: 500,
-    maxStockLevel: 2000,
-    batchNumber: 'CTZ-H-312',
-    expiryDate: '2028-01-31',
-    pendingOrders: 0,
-    sourceWarehouse: 'District Drug Warehouse Mandore (RMSCL)',
-    projectedStockoutDays: 96.0,
-    stockoutRisk: 'SURPLUS',
-    predictedSurplus: 900,
-    forecast7Day: 210,
-    forecast30Day: 900,
-    fefoPriority: 'NORMAL'
-  },
-  {
-    id: 'med-arv-osian',
-    phcId: 'phc-osian',
-    name: 'Anti-Rabies Vaccine (ARV) 2.5 IU/ml (Cold Chain 2-8°C)',
-    category: 'Vaccines & Antidotes',
-    unit: 'Vials',
-    currentStock: 28,
-    dailyConsumption: 3,
-    weeklyConsumption: 20,
-    minStockLevel: 25,
-    maxStockLevel: 100,
-    batchNumber: 'ARV-CC-704',
-    expiryDate: '2027-04-30',
-    pendingOrders: 30,
-    expectedDeliveryDate: '2026-09-29',
-    sourceWarehouse: 'State Vaccine Depot Jaipur / Jodhpur Cold Store',
-    projectedStockoutDays: 9.3,
-    stockoutRisk: 'NORMAL',
-    predictedSurplus: 0,
-    forecast7Day: 22,
-    forecast30Day: 95,
-    fefoPriority: 'NORMAL'
-  },
-  {
-    id: 'med-asv-osian',
-    phcId: 'phc-osian',
-    name: 'Polyvalent Anti-Snake Venom (ASV) 10ml',
-    category: 'Vaccines & Antidotes',
-    unit: 'Vials',
-    currentStock: 12,
-    dailyConsumption: 1,
-    weeklyConsumption: 4,
-    minStockLevel: 15,
-    maxStockLevel: 50,
-    batchNumber: 'ASV-P-191',
-    expiryDate: '2027-02-28',
-    pendingOrders: 20,
-    expectedDeliveryDate: '2026-09-26',
-    sourceWarehouse: 'District Drug Warehouse Mandore (RMSCL)',
-    projectedStockoutDays: 12.0,
-    stockoutRisk: 'WARNING',
-    predictedSurplus: 0,
-    forecast7Day: 6,
-    forecast30Day: 25,
-    fefoPriority: 'NORMAL'
-  },
-  {
-    id: 'med-ors-mandore',
-    phcId: 'phc-mandore',
-    name: 'Oral Rehydration Salts (ORS) Sachets 20.5g',
-    category: 'Essential ORS/Fluids',
-    unit: 'Sachets',
-    currentStock: 2150,
-    dailyConsumption: 22,
-    weeklyConsumption: 150,
-    minStockLevel: 400,
-    maxStockLevel: 1800,
-    batchNumber: 'ORS-RJ-2601',
-    expiryDate: '2027-06-30',
-    pendingOrders: 0,
-    sourceWarehouse: 'District Drug Warehouse Mandore (RMSCL)',
-    projectedStockoutDays: 97.7,
-    stockoutRisk: 'SURPLUS',
-    predictedSurplus: 1150,
-    forecast7Day: 160,
-    forecast30Day: 700,
-    fefoPriority: 'NORMAL'
-  },
-  {
-    id: 'med-ns-mandore',
-    phcId: 'phc-mandore',
-    name: 'Normal Saline (0.9% NaCl) IV Infusion 500ml',
-    category: 'Essential ORS/Fluids',
-    unit: 'Bottles',
-    currentStock: 520,
-    dailyConsumption: 8,
-    weeklyConsumption: 55,
-    minStockLevel: 100,
-    maxStockLevel: 400,
-    batchNumber: 'NS-IV-912',
-    expiryDate: '2027-05-30',
-    pendingOrders: 0,
-    sourceWarehouse: 'District Drug Warehouse Mandore (RMSCL)',
-    projectedStockoutDays: 65.0,
-    stockoutRisk: 'SURPLUS',
-    predictedSurplus: 220,
-    forecast7Day: 60,
-    forecast30Day: 260,
-    fefoPriority: 'NORMAL'
-  }
-];
+export const FACILITIES: PHCFacility[] = INDIA_PHC_DIRECTORY;
+
+export const INITIAL_MEDICINES: MedicineItem[] = generateEssentialMedicinesForPHC(
+  'phc-osian',
+  'District Drug Warehouse Mandore (RMSCL)'
+);
 
 export const INITIAL_CAPACITY: CapacityRecord = {
   phcId: 'phc-osian',
@@ -617,12 +287,51 @@ export const INITIAL_ORDERS: LogisticsOrder[] = [
     destination: 'PHC Osian Store',
     status: 'IN TRANSIT',
     requestDate: '2026-09-20',
+    submittedDate: '2026-09-20',
     approvalDate: '2026-09-21',
     dispatchDate: '2026-09-22',
+    inTransitDate: '2026-09-22',
     estimatedDelivery: '2026-09-23',
     consignmentId: 'RJ-VTS-66014',
     priority: 'EMERGENCY_REPLENISHMENT',
-    notes: 'Priority dispatch requested due to IMD heatwave orange alert and buffer stock dip.'
+    notes: 'Priority dispatch requested due to IMD heatwave orange alert and buffer stock dip.',
+    isHistoricalDemo: true,
+    pipelineTracked: true,
+    stockCredited: false,
+    statusHistory: [
+      {
+        transactionId: 'TXN-HIST-904-1',
+        previousStatus: 'DRAFT',
+        newStatus: 'SUBMITTED',
+        timestamp: '2026-09-20T09:15:00Z',
+        actor: 'Dr. S. C. Bishnoi (MOIC)',
+        note: 'Emergency indent submitted (Historical Demo Record)'
+      },
+      {
+        transactionId: 'TXN-HIST-904-2',
+        previousStatus: 'SUBMITTED',
+        newStatus: 'APPROVED',
+        timestamp: '2026-09-21T11:30:00Z',
+        actor: 'RMSCL District Nodal Officer',
+        note: 'Approved for 500 sachets'
+      },
+      {
+        transactionId: 'TXN-HIST-904-3',
+        previousStatus: 'APPROVED',
+        newStatus: 'DISPATCHED',
+        timestamp: '2026-09-22T08:00:00Z',
+        actor: 'Mandore DDW Store',
+        note: 'Consignment RJ-VTS-66014 dispatched'
+      },
+      {
+        transactionId: 'TXN-HIST-904-4',
+        previousStatus: 'DISPATCHED',
+        newStatus: 'IN TRANSIT',
+        timestamp: '2026-09-22T10:30:00Z',
+        actor: 'RMSCL Fleet VTS',
+        note: 'En route to PHC Osian Store'
+      }
+    ]
   },
   {
     id: 'ORD-2026-891',
@@ -635,12 +344,42 @@ export const INITIAL_ORDERS: LogisticsOrder[] = [
     destination: 'PHC Osian Store',
     status: 'DISPATCHED',
     requestDate: '2026-09-19',
+    submittedDate: '2026-09-19',
     approvalDate: '2026-09-20',
     dispatchDate: '2026-09-22',
     estimatedDelivery: '2026-09-24',
     consignmentId: 'RJ-VTS-65980',
     priority: 'URGENT',
-    notes: 'Batch assigned: NS-IV-1004'
+    notes: 'Batch assigned: NS-IV-1004',
+    isHistoricalDemo: true,
+    pipelineTracked: true,
+    stockCredited: false,
+    statusHistory: [
+      {
+        transactionId: 'TXN-HIST-891-1',
+        previousStatus: 'DRAFT',
+        newStatus: 'SUBMITTED',
+        timestamp: '2026-09-19T10:00:00Z',
+        actor: 'Dr. S. C. Bishnoi (MOIC)',
+        note: 'Urgent IV fluid indent submitted'
+      },
+      {
+        transactionId: 'TXN-HIST-891-2',
+        previousStatus: 'SUBMITTED',
+        newStatus: 'APPROVED',
+        timestamp: '2026-09-20T14:20:00Z',
+        actor: 'RMSCL District Nodal Officer',
+        note: 'Approved for 200 bottles'
+      },
+      {
+        transactionId: 'TXN-HIST-891-3',
+        previousStatus: 'APPROVED',
+        newStatus: 'DISPATCHED',
+        timestamp: '2026-09-22T09:15:00Z',
+        actor: 'Mandore DDW Store',
+        note: 'Batch NS-IV-1004 assigned to RJ-VTS-65980'
+      }
+    ]
   },
   {
     id: 'ORD-2026-880',
@@ -652,10 +391,32 @@ export const INITIAL_ORDERS: LogisticsOrder[] = [
     destination: 'PHC Osian Store',
     status: 'APPROVED',
     requestDate: '2026-09-21',
+    submittedDate: '2026-09-21',
     approvalDate: '2026-09-22',
     estimatedDelivery: '2026-09-26',
     priority: 'ROUTINE',
-    notes: 'Awaiting picker verification at district central store'
+    notes: 'Awaiting picker verification at district central store',
+    isHistoricalDemo: true,
+    pipelineTracked: true,
+    stockCredited: false,
+    statusHistory: [
+      {
+        transactionId: 'TXN-HIST-880-1',
+        previousStatus: 'DRAFT',
+        newStatus: 'SUBMITTED',
+        timestamp: '2026-09-21T11:00:00Z',
+        actor: 'R. L. Patel (Pharmacist)',
+        note: 'Routine cycle indent submitted'
+      },
+      {
+        transactionId: 'TXN-HIST-880-2',
+        previousStatus: 'SUBMITTED',
+        newStatus: 'APPROVED',
+        timestamp: '2026-09-22T15:10:00Z',
+        actor: 'RMSCL District Nodal Officer',
+        note: 'Approved; awaiting dispatch'
+      }
+    ]
   },
   {
     id: 'ORD-2026-872',
@@ -668,13 +429,56 @@ export const INITIAL_ORDERS: LogisticsOrder[] = [
     destination: 'PHC Osian Store',
     status: 'DELIVERED',
     requestDate: '2026-09-15',
+    submittedDate: '2026-09-15',
     approvalDate: '2026-09-16',
     dispatchDate: '2026-09-18',
+    inTransitDate: '2026-09-18',
     estimatedDelivery: '2026-09-19',
     actualDeliveryDate: '2026-09-19',
     consignmentId: 'RJ-VTS-65412',
     priority: 'ROUTINE',
-    notes: 'Received and verified in physical stock book'
+    notes: 'Received and verified in physical stock book',
+    isHistoricalDemo: true,
+    pipelineTracked: false,
+    stockCredited: true,
+    statusHistory: [
+      {
+        transactionId: 'TXN-HIST-872-1',
+        previousStatus: 'DRAFT',
+        newStatus: 'SUBMITTED',
+        timestamp: '2026-09-15T09:30:00Z',
+        actor: 'R. L. Patel (Pharmacist)'
+      },
+      {
+        transactionId: 'TXN-HIST-872-2',
+        previousStatus: 'SUBMITTED',
+        newStatus: 'APPROVED',
+        timestamp: '2026-09-16T12:00:00Z',
+        actor: 'RMSCL District Nodal Officer'
+      },
+      {
+        transactionId: 'TXN-HIST-872-3',
+        previousStatus: 'APPROVED',
+        newStatus: 'DISPATCHED',
+        timestamp: '2026-09-18T08:45:00Z',
+        actor: 'Mandore DDW Store'
+      },
+      {
+        transactionId: 'TXN-HIST-872-4',
+        previousStatus: 'DISPATCHED',
+        newStatus: 'IN TRANSIT',
+        timestamp: '2026-09-18T11:00:00Z',
+        actor: 'RMSCL Fleet VTS'
+      },
+      {
+        transactionId: 'TXN-HIST-872-5',
+        previousStatus: 'IN TRANSIT',
+        newStatus: 'DELIVERED',
+        timestamp: '2026-09-19T14:30:00Z',
+        actor: 'R. L. Patel (Pharmacist)',
+        note: 'Received +2,000 tablets into PHC Osian stock ledger'
+      }
+    ]
   }
 ];
 
@@ -691,6 +495,9 @@ export const INITIAL_REDISTRIBUTION: RedistributionOpportunity[] = [
       id: 'phc-mandore',
       name: 'PHC Mandore',
       currentStock: 2150,
+      usableStock: 2150,
+      reservedStock: 0,
+      minStockLevel: 500,
       projectedDemand: 350,
       potentialSurplus: 1200
     },
@@ -698,6 +505,7 @@ export const INITIAL_REDISTRIBUTION: RedistributionOpportunity[] = [
       id: 'phc-osian',
       name: 'PHC Osian (24x7)',
       currentStock: 210,
+      usableStock: 210,
       projectedDemand: 800,
       projectedShortage: 590,
       urgencyLevel: 'CRITICAL'
@@ -705,7 +513,22 @@ export const INITIAL_REDISTRIBUTION: RedistributionOpportunity[] = [
     recommendedTransferQuantity: 600,
     transitDistanceKm: 55,
     estimatedTransitTimeHours: 1.2,
-    status: 'PROPOSED'
+    status: 'PENDING_REVIEW',
+    donorReserved: false,
+    donorDeducted: false,
+    receiverCredited: false,
+    createdDate: '2026-09-22',
+    isHistoricalDemo: true,
+    statusHistory: [
+      {
+        transactionId: 'TXN-HIST-REDIST-01',
+        previousStatus: 'NEW',
+        newStatus: 'PENDING_REVIEW',
+        timestamp: '2026-09-22T07:30:00Z',
+        actor: 'District Redistribution Protocol',
+        note: 'Proposed 600 Sachets lateral transfer from PHC Mandore to PHC Osian (24x7)'
+      }
+    ]
   },
   {
     id: 'REDIST-2026-02',
@@ -719,6 +542,9 @@ export const INITIAL_REDISTRIBUTION: RedistributionOpportunity[] = [
       id: 'phc-mandore',
       name: 'PHC Mandore',
       currentStock: 520,
+      usableStock: 520,
+      reservedStock: 0,
+      minStockLevel: 100,
       projectedDemand: 120,
       potentialSurplus: 220
     },
@@ -726,6 +552,7 @@ export const INITIAL_REDISTRIBUTION: RedistributionOpportunity[] = [
       id: 'phc-osian',
       name: 'PHC Osian (24x7)',
       currentStock: 64,
+      usableStock: 64,
       projectedDemand: 180,
       projectedShortage: 116,
       urgencyLevel: 'HIGH'
@@ -733,7 +560,22 @@ export const INITIAL_REDISTRIBUTION: RedistributionOpportunity[] = [
     recommendedTransferQuantity: 100,
     transitDistanceKm: 55,
     estimatedTransitTimeHours: 1.2,
-    status: 'PENDING_REVIEW'
+    status: 'PENDING_REVIEW',
+    donorReserved: false,
+    donorDeducted: false,
+    receiverCredited: false,
+    createdDate: '2026-09-22',
+    isHistoricalDemo: true,
+    statusHistory: [
+      {
+        transactionId: 'TXN-HIST-REDIST-02',
+        previousStatus: 'NEW',
+        newStatus: 'PENDING_REVIEW',
+        timestamp: '2026-09-22T08:00:00Z',
+        actor: 'District Redistribution Protocol',
+        note: 'Proposed 100 Bottles lateral transfer from PHC Mandore to PHC Osian (24x7)'
+      }
+    ]
   }
 ];
 
@@ -926,6 +768,48 @@ export const INTEGRATION_CONNECTORS: IntegrationConnector[] = [
     endpointUrl: 'https://evin.mohfw.gov.in/api/v2/telemetry/coldchain',
     protocol: 'MQTT / IoT',
     dataExchanged: 'ILR Refrigerator temperature (2-8°C), Cold room power backup status, Antigen inventories'
+  },
+  {
+    id: 'google_speech_to_text',
+    name: 'Google Speech-to-Text & Gemini Audio ASR (gemini-3.5-transcribe)',
+    acronym: 'STT / ASR',
+    category: 'AI & Multilingual Speech',
+    description: 'Real-time clinical Speech-to-Text transcription engine supporting noisy OPD acoustic environments, Hindi, Hinglish, and regional Indic dialects.',
+    status: 'CONNECTED',
+    lastSync: 'Just now',
+    latencyMs: 82,
+    endpoint: '/api/voice/transcribe (gemini-3.5-transcribe)',
+    endpointUrl: '/api/voice/transcribe',
+    protocol: 'REST / JSON',
+    dataExchanged: 'WebM/WAV microphone audio streams, verbatim multilingual transcripts, acoustic confidence telemetry'
+  },
+  {
+    id: 'vertex_ai_gemini',
+    name: 'Google Cloud Vertex AI & Gemini API (@google/genai)',
+    acronym: 'VERTEX / GEMINI',
+    category: 'AI & Multilingual Speech',
+    description: 'Server-side Vertex AI & Gemini 3.8 Flash NLU pipeline for structured clinical entity extraction, FEFO stockout forecasting, and epidemic surge alerts.',
+    status: 'CONNECTED',
+    lastSync: 'Just now',
+    latencyMs: 118,
+    endpoint: '/api/voice/process & /api/ai/health-preparedness-surge',
+    endpointUrl: '/api/voice/process',
+    protocol: 'REST / JSON',
+    dataExchanged: 'Canonical NLEM drug resolution, multilingual translation, epidemiological ML surge synthesis'
+  },
+  {
+    id: 'multilingual_submission_gateway',
+    name: 'Indic Multilingual Submission & Translation Gateway',
+    acronym: 'INDIC-NLU',
+    category: 'AI & Multilingual Speech',
+    description: 'Cross-lingual voice & text submission bridge converting 8+ Indian languages (Hindi, Hinglish, Marwari, Tamil, Telugu, Bengali, Marathi, Gujarati) into standardized e-Aushadhi ledger transactions.',
+    status: 'CONNECTED',
+    lastSync: '1 min ago',
+    latencyMs: 94,
+    endpoint: '/api/voice/multilingual-submit',
+    endpointUrl: '/api/voice/multilingual-submit',
+    protocol: 'REST / JSON',
+    dataExchanged: 'Multilingual voice/text submissions, English & Devanagari cross-translations, verified PHC ledger commits'
   }
 ];
 

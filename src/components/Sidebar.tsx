@@ -3,37 +3,29 @@ import {
   LayoutDashboard,
   Pill,
   ScanLine,
-  Mic,
-  BedDouble,
-  Users,
   CloudSun,
   Truck,
   AlertTriangle,
   BarChart3,
-  PlugZap,
-  Settings,
   Activity,
-  ChevronRight,
   X,
+  MapPin,
+  Building2,
+  KeyRound,
+  LogOut,
   ShieldCheck,
-  Building,
-  Clock,
-  MapPin
+  UserPlus
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.tsx';
+import { getPHCInchargeCredential } from '../utils/phcAuthDirectory.ts';
 
 interface SidebarItem {
   id: string;
   name: string;
-  shortName?: string;
+  subtitle: string;
   icon: React.ElementType;
-  badge?: number;
-  badgeColor?: string;
-}
-
-interface NavGroup {
-  groupTitle: string;
-  items: SidebarItem[];
+  count?: number;
+  badgeColor?: 'rose' | 'amber' | 'emerald';
 }
 
 export const Sidebar: React.FC = () => {
@@ -42,87 +34,90 @@ export const Sidebar: React.FC = () => {
     setActiveModule,
     alerts,
     orders,
-    role,
+    medicines,
     selectedPHC,
     mobileSidebarOpen,
-    setMobileSidebarOpen
+    setMobileSidebarOpen,
+    inchargeSession,
+    openAuthModal,
+    signOutIncharge,
+    showNotification
   } = useApp();
 
-  const activeAlertsCount = alerts.filter(a => a.status === 'ACTIVE').length;
+  const activeAlertsCount = alerts.filter((a) => a.status === 'ACTIVE').length;
+  const criticalMedsCount = medicines.filter((m) => m.stockoutRisk === 'CRITICAL').length;
   const pendingOrdersCount = orders.filter(
-    o => o.status === 'APPROVAL PENDING' || o.status === 'REQUESTED'
+    (o) => o.status === 'APPROVAL PENDING' || o.status === 'REQUESTED' || o.status === 'IN TRANSIT'
   ).length;
 
-  const navGroups: NavGroup[] = [
+  const currentCredential = getPHCInchargeCredential(selectedPHC);
+
+  const coreModules: SidebarItem[] = [
     {
-      groupTitle: 'Command & Overview',
-      items: [
-        { id: 'home', name: 'Operational Command', icon: LayoutDashboard }
-      ]
+      id: 'home',
+      name: 'Supply Overview',
+      subtitle: 'Quick actions, stock & dispense',
+      icon: LayoutDashboard
     },
     {
-      groupTitle: 'Clinical Supply & Data',
-      items: [
-        { id: 'medicine', name: 'Medicine Intelligence', icon: Pill },
-        { id: 'records', name: 'Physical Register OCR', icon: ScanLine },
-        { id: 'voice', name: 'Multilingual Voice Entry', icon: Mic }
-      ]
+      id: 'medicine',
+      name: 'Medicine Inventory & FEFO',
+      subtitle: 'Batches, shelf-life & reorders',
+      icon: Pill,
+      count: criticalMedsCount > 0 ? criticalMedsCount : undefined,
+      badgeColor: 'rose'
     },
     {
-      groupTitle: 'Capacity & Workforce',
-      items: [
-        { id: 'capacity', name: 'Facility Bed Capacity', icon: BedDouble },
-        { id: 'workforce', name: 'Workforce Roster', icon: Users },
-        {
-          id: 'preparedness',
-          name: 'Seasonal Preparedness',
-          icon: CloudSun,
-          badge: 1,
-          badgeColor: 'bg-amber-600'
-        }
-      ]
+      id: 'preparedness',
+      name: 'Demand & Surge Forecast',
+      subtitle: 'Regional & seasonal surge AI',
+      icon: CloudSun
     },
     {
-      groupTitle: 'Logistics & Surveillance',
-      items: [
-        {
-          id: 'map',
-          name: 'Map & Network',
-          icon: MapPin,
-          badge: 3,
-          badgeColor: 'bg-emerald-600'
-        },
-        {
-          id: 'orders',
-          name: 'Indent Supply Chain',
-          icon: Truck,
-          badge: pendingOrdersCount > 0 ? pendingOrdersCount : undefined,
-          badgeColor: 'bg-blue-600'
-        },
-        {
-          id: 'alerts',
-          name: 'Incident Alerts',
-          icon: AlertTriangle,
-          badge: activeAlertsCount > 0 ? activeAlertsCount : undefined,
-          badgeColor: 'bg-rose-600'
-        },
-        { id: 'analytics', name: 'District Reports & Audit', icon: BarChart3 }
-      ]
+      id: 'orders',
+      name: 'Orders & PHC Transfers',
+      subtitle: 'Warehouse indents & sharing',
+      icon: Truck,
+      count: pendingOrdersCount > 0 ? pendingOrdersCount : undefined,
+      badgeColor: 'amber'
     },
     {
-      groupTitle: 'Governance & Administration',
-      items: [
-        { id: 'integrations', name: 'GovData Integrations', icon: PlugZap },
-        { id: 'settings', name: 'Facility Parameters', icon: Settings }
-      ]
+      id: 'map',
+      name: 'Network Stock Map',
+      subtitle: '53 facilities & live routing',
+      icon: MapPin
+    },
+    {
+      id: 'directory',
+      name: 'PHC & NLEM Catalogue',
+      subtitle: 'All 53 PHCs & 51 NLEM drugs',
+      icon: Building2
+    },
+    {
+      id: 'records',
+      name: 'Register Scan (OCR)',
+      subtitle: 'Stock book photo capture',
+      icon: ScanLine
+    },
+    {
+      id: 'alerts',
+      name: 'Alerts & Offline Queue',
+      subtitle: 'Thresholds & local sync',
+      icon: AlertTriangle,
+      count: activeAlertsCount > 0 ? activeAlertsCount : undefined,
+      badgeColor: 'rose'
+    },
+    {
+      id: 'analytics',
+      name: 'CSV / PDF Reports',
+      subtitle: 'Download stock & audit logs',
+      icon: BarChart3
     }
   ];
 
-  const roleNameMap: Record<string, string> = {
-    phc_worker: 'Health Worker / Pharmacist',
-    medical_officer: 'Medical Officer In-Charge',
-    district_admin: 'District Health Admin',
-    state_admin: 'State Health Admin'
+  const handleSelectModule = (id: string) => {
+    setActiveModule(id);
+    setMobileSidebarOpen(false);
   };
 
   return (
@@ -130,149 +125,169 @@ export const Sidebar: React.FC = () => {
       {/* Mobile Drawer Overlay */}
       {mobileSidebarOpen && (
         <div
-          className="fixed inset-0 bg-slate-950/70 z-40 backdrop-blur-xs lg:hidden transition-opacity"
+          className="fixed inset-0 bg-slate-950/60 z-40 backdrop-blur-xs lg:hidden transition-opacity"
           onClick={() => setMobileSidebarOpen(false)}
           aria-hidden="true"
         />
       )}
 
-      {/* Main Sidebar Element */}
+      {/* Modern Friendly Sidebar */}
       <aside
         id="app-sidebar"
         aria-label="Main Navigation"
-        className={`fixed inset-y-0 left-0 z-50 w-72 bg-slate-900 text-slate-100 flex flex-col shrink-0 border-r border-slate-800 transition-transform duration-200 ease-in-out lg:static lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-50 w-68 bg-linear-to-b from-slate-900 via-teal-950 to-slate-950 text-slate-100 flex flex-col shrink-0 border-r border-teal-900/60 transition-transform duration-200 ease-in-out lg:static lg:translate-x-0 ${
           mobileSidebarOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full'
         }`}
       >
-        {/* Tricolor National/State Official Accent Ribbon */}
-        <div className="h-1 w-full flex shrink-0">
-          <div className="h-full flex-1 bg-amber-500" />
-          <div className="h-full flex-1 bg-white" />
-          <div className="h-full flex-1 bg-emerald-600" />
-        </div>
-
-        {/* Institutional Government Header */}
-        <div className="p-4 border-b border-slate-800 bg-slate-950/60 shrink-0">
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-lg bg-emerald-600 text-white flex items-center justify-center font-bold text-base shadow-xs shadow-emerald-950/80 ring-1 ring-white/10 shrink-0">
-                <Activity className="w-5 h-5 text-white" aria-hidden="true" />
-              </div>
-              <div className="min-w-0">
-                <div className="text-[10px] uppercase tracking-widest font-semibold text-emerald-400 leading-tight">
-                  Govt of Rajasthan • NHM
-                </div>
-                <div className="font-bold text-slate-50 tracking-tight text-sm leading-snug">
-                  PHC Intelligence Grid
-                </div>
-                <div className="text-[10px] text-slate-400 font-mono tracking-tight truncate mt-0.5">
-                  NIN: {selectedPHC.code}
-                </div>
-              </div>
+        {/* Brand Header */}
+        <div className="h-16 px-4 border-b border-white/10 flex items-center justify-between shrink-0">
+          <button
+            type="button"
+            onClick={() => handleSelectModule('home')}
+            className="flex items-center gap-3 text-left focus:outline-none cursor-pointer"
+          >
+            <div className="w-9 h-9 rounded-xl bg-linear-to-br from-teal-400 to-emerald-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+              <Activity className="w-5 h-5 text-white" aria-hidden="true" />
             </div>
+            <div className="min-w-0">
+              <span className="font-extrabold text-white tracking-tight text-sm block leading-none">
+                MEDRESQ PORTAL
+              </span>
+              <span className="text-[11px] text-teal-300 font-medium truncate block mt-1 leading-none">
+                {selectedPHC.name}
+              </span>
+            </div>
+          </button>
 
-            {/* Mobile Close Button */}
-            <button
-              type="button"
-              onClick={() => setMobileSidebarOpen(false)}
-              className="lg:hidden p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-              aria-label="Close navigation sidebar"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-
-          {/* Operational Pipeline Strip */}
-          <div className="mt-3 py-1 px-2 rounded-md bg-slate-900/90 border border-slate-800 text-[10px] text-slate-300 flex items-center justify-between font-mono">
-            <span className="text-emerald-400 font-bold">CAPTURE</span>
-            <span className="text-slate-600">→</span>
-            <span className="text-sky-400 font-bold">PREDICT</span>
-            <span className="text-slate-600">→</span>
-            <span className="text-amber-400 font-bold">ACT</span>
-          </div>
+          <button
+            type="button"
+            onClick={() => setMobileSidebarOpen(false)}
+            className="lg:hidden p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 focus:outline-none"
+            aria-label="Close navigation sidebar"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
 
-        {/* Navigation Group Links */}
-        <nav className="flex-1 px-2.5 py-3 space-y-4 overflow-y-auto custom-scrollbar">
-          {navGroups.map((group, gIdx) => (
-            <div key={gIdx} className="space-y-1">
-              <div className="px-3 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                {group.groupTitle}
-              </div>
-              {group.items.map(item => {
-                const Icon = item.icon;
-                const isActive = activeModule === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    id={`nav-${item.id}`}
-                    type="button"
-                    onClick={() => setActiveModule(item.id)}
-                    className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition-all group ${
-                      isActive
-                        ? 'bg-emerald-600 text-white shadow-xs shadow-emerald-950 font-bold'
-                        : 'text-slate-300 hover:bg-slate-800/80 hover:text-white'
+        {/* Navigation Content */}
+        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto custom-scrollbar-dark">
+          <div className="px-3 pb-2 text-[10px] font-bold text-teal-300/80 uppercase tracking-widest">
+            Friendly PHC Workspace
+          </div>
+          {coreModules.map((item) => {
+            const Icon = item.icon;
+            const isActive = activeModule === item.id;
+            return (
+              <button
+                key={item.id}
+                id={`nav-${item.id}`}
+                type="button"
+                onClick={() => handleSelectModule(item.id)}
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-left transition-all cursor-pointer ${
+                  isActive
+                    ? 'bg-linear-to-r from-teal-600 to-emerald-600 text-white shadow-md ring-1 ring-teal-400/40'
+                    : 'text-slate-300 hover:bg-white/8 hover:text-white'
+                }`}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div
+                    className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                      isActive ? 'bg-white/20 text-white' : 'bg-white/5 text-teal-300'
                     }`}
                   >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <Icon
-                        className={`w-4 h-4 shrink-0 transition-colors ${
-                          isActive
-                            ? 'text-white'
-                            : 'text-slate-400 group-hover:text-emerald-300'
-                        }`}
-                        aria-hidden="true"
-                      />
-                      <span className="truncate">{item.name}</span>
+                    <Icon className="w-4 h-4" aria-hidden="true" />
+                  </div>
+                  <div className="min-w-0">
+                    <div
+                      className={`text-xs truncate whitespace-nowrap ${
+                        isActive ? 'font-bold' : 'font-semibold'
+                      }`}
+                    >
+                      {item.name}
                     </div>
+                    <div
+                      className={`text-[10px] truncate ${
+                        isActive ? 'text-teal-100' : 'text-slate-400'
+                      }`}
+                    >
+                      {item.subtitle}
+                    </div>
+                  </div>
+                </div>
 
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      {item.badge !== undefined && item.badge > 0 && (
-                        <span
-                          className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full text-white ${
-                            item.badgeColor || 'bg-slate-700'
-                          }`}
-                        >
-                          {item.badge}
-                        </span>
-                      )}
-                      {isActive && (
-                        <ChevronRight className="w-3.5 h-3.5 text-emerald-200" aria-hidden="true" />
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          ))}
+                {item.count !== undefined && item.count > 0 && (
+                  <span
+                    className={`text-[10px] font-mono tabular-nums font-bold px-2 py-0.5 rounded-full shrink-0 ${
+                      isActive
+                        ? 'bg-slate-950/40 text-white'
+                        : item.badgeColor === 'rose'
+                        ? 'bg-rose-500 text-white'
+                        : 'bg-amber-500/25 text-amber-200 border border-amber-400/30'
+                    }`}
+                  >
+                    {item.count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </nav>
 
-        {/* Facility Context & Officer Authorization Card */}
-        <div className="p-3 border-t border-slate-800 bg-slate-950/80 shrink-0 space-y-2">
-          <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-md bg-emerald-900/60 border border-emerald-700/60 flex items-center justify-center text-[11px] text-emerald-300 font-bold font-mono shrink-0">
-              {role === 'phc_worker' && 'PW'}
-              {role === 'medical_officer' && 'MO'}
-              {role === 'district_admin' && 'DA'}
-              {role === 'state_admin' && 'SA'}
+        {/* Active PHC Incharge & Masked Demo Credential Footer Card */}
+        <div className="p-3 border-t border-white/10 bg-slate-950/60 space-y-2.5 shrink-0">
+          <div className="p-2.5 rounded-xl bg-white/5 border border-white/10 space-y-2">
+            <div className="flex items-center justify-between gap-1.5">
+              <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold text-emerald-300">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Simulated Demo Session</span>
+              </span>
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-400/15 text-amber-300 border border-amber-400/30 font-bold">
+                {currentCredential.maskedCredential}
+              </span>
             </div>
-            <div className="min-w-0 flex-1">
-              <div className="text-[11px] font-bold text-slate-200 truncate">
-                {roleNameMap[role] || role}
+
+            <div className="min-w-0">
+              <div className="text-xs font-bold text-white truncate">
+                {inchargeSession?.inchargeName || currentCredential.inchargeName}
               </div>
-              <div className="text-[10px] text-slate-400 truncate">
-                {selectedPHC.name}
+              <div className="text-[10px] text-teal-200/75 truncate">
+                {selectedPHC.name} · {selectedPHC.district}
               </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-1.5 pt-1">
+              <button
+                type="button"
+                onClick={() => openAuthModal('directory')}
+                className="px-2 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-[10px] font-bold text-teal-200 flex items-center justify-center gap-1 transition-colors cursor-pointer"
+                title="Open PHC Incharge Directory (Simulated Demo Accounts)"
+              >
+                <KeyRound className="w-3 h-3" />
+                <span>Directory</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => openAuthModal('signup', selectedPHC)}
+                className="px-2 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-[10px] font-bold text-emerald-200 flex items-center justify-center gap-1 transition-colors cursor-pointer"
+                title="Configure Demo Profile"
+              >
+                <UserPlus className="w-3 h-3" />
+                <span>Configure</span>
+              </button>
             </div>
           </div>
 
-          <div className="pt-1.5 border-t border-slate-800/80 flex items-center justify-between text-[10px] text-slate-400">
-            <span className="flex items-center gap-1 text-emerald-400 font-medium">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              Grid Node Active
-            </span>
-            <span className="font-mono text-slate-500">v2.4 LTS</span>
-          </div>
+          <button
+            type="button"
+            onClick={() => {
+              signOutIncharge();
+              showNotification('Signed out of PHC Incharge session.');
+            }}
+            className="w-full py-1.5 px-3 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/25 text-rose-200 text-[11px] font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Lock PHC / Sign Out</span>
+          </button>
         </div>
       </aside>
     </>

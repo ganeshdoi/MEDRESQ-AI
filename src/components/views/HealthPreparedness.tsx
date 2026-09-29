@@ -48,56 +48,25 @@ import {
 import { useApp } from '../../context/AppContext.tsx';
 import { StatusBadge } from '../ui/StatusBadge.tsx';
 import { OrderModal } from '../ui/OrderModal.tsx';
-import { PredictiveConsumptionTrend } from './PredictiveConsumptionTrend.tsx';
+import { PredictiveConsumptionTrend, EvaluatedSupplyItem } from './PredictiveConsumptionTrend.tsx';
 import { generatePreparednessPdf } from '../../utils/generatePreparednessPdf.ts';
 import { WhyThisAlertModal, AlertMathBreakdown } from '../ui/WhyThisAlertModal.tsx';
+import { MLSurgeCapacityAlertsPanel } from './MLSurgeCapacityAlertsPanel.tsx';
+import { calculateMedicineForecast, simulateSupplyDisruption } from '../../utils/inventoryForecast.ts';
+import { generateEssentialMedicinesForPHC } from '../../data/nationalEssentialMedicines.ts';
+import {
+  EpidemicSeasonKey,
+  RegionalSeasonScenarioPreset,
+  getDefaultSeasonForZone,
+  getRegionalGeographySeasonProfile,
+  resolveAgroClimaticZone
+} from '../../utils/regionalDemandProfile.ts';
 
-interface ScenarioPreset {
-  id: string;
-  name: string;
-  badge: string;
-  badgeColor: string;
-  temp: number;
-  humidity: number;
-  footfall: number;
-  leadTimeDays: number;
-  description: string;
-}
-
-const SCENARIOS: ScenarioPreset[] = [
-  {
-    id: 'current-orange',
-    name: 'Current: IMD Orange Alert Heatwave',
-    badge: 'ORANGE ALERT',
-    badgeColor: 'bg-amber-100 text-amber-900 border-amber-300',
-    temp: 44.8,
-    humidity: 17,
-    footfall: 295,
-    leadTimeDays: 3.5,
-    description: 'IMD Level-3 advisory: Severe desert heatwave across Jodhpur/Osian block with 44.8°C (+4.2°C anomaly) and dry dust-bearing winds.'
-  },
-  {
-    id: 'peak-red',
-    name: 'Escalated: Level-4 Severe Red Alert',
-    badge: 'RED ALERT',
-    badgeColor: 'bg-rose-100 text-rose-900 border-rose-300',
-    temp: 47.0,
-    humidity: 12,
-    footfall: 350,
-    leadTimeDays: 4.0,
-    description: 'Catastrophic desert heat spike: Extreme temperatures exceeding 47°C, severe sandstorm, critical dehydration caseload (+120%).'
-  },
-  {
-    id: 'baseline-relief',
-    name: 'Post-Disturbance Moderation (Baseline)',
-    badge: 'NORMAL SUMMER',
-    badgeColor: 'bg-emerald-100 text-emerald-900 border-emerald-300',
-    temp: 39.5,
-    humidity: 38,
-    footfall: 180,
-    leadTimeDays: 3.0,
-    description: 'Western disturbance cloud cover: Temperatures ease to 39.5°C, humidity recovers, routine patient volume.'
-  }
+const SEASON_OPTIONS: Array<{ key: EpidemicSeasonKey; label: string; months: string }> = [
+  { key: 'SUMMER_HEATWAVE', label: 'Summer Heatwave & Loo', months: 'Apr – Jun' },
+  { key: 'MONSOON_VECTOR_FLOOD', label: 'Monsoon Vector & Snakebite', months: 'Jul – Sep' },
+  { key: 'POST_MONSOON_SCRUB_TYPHUS', label: 'Post-Monsoon Scrub Typhus', months: 'Oct – Nov' },
+  { key: 'WINTER_COLD_RESPIRATORY', label: 'Winter Cold Wave & ARI', months: 'Dec – Feb' }
 ];
 
 export const HealthPreparedness: React.FC = () => {
@@ -105,6 +74,8 @@ export const HealthPreparedness: React.FC = () => {
     weather,
     medicines,
     selectedPHC,
+    setSelectedPHC,
+    facilities,
     orders,
     redistributions,
     showNotification,
@@ -113,22 +84,50 @@ export const HealthPreparedness: React.FC = () => {
     setActiveModule
   } = useApp();
 
+  // Active Season & Regional Profile State
+  const [activeSeason, setActiveSeason] = useState<EpidemicSeasonKey>(() =>
+    getDefaultSeasonForZone(resolveAgroClimaticZone(selectedPHC))
+  );
+
+  const regionalProfile = useMemo(
+    () => getRegionalGeographySeasonProfile(selectedPHC, activeSeason),
+    [selectedPHC, activeSeason]
+  );
+
   // Active Simulation Controls
   const [selectedScenarioId, setSelectedScenarioId] = useState<string>('current-orange');
-  const [customTemp, setCustomTemp] = useState<number>(44.8);
-  const [customHumidity, setCustomHumidity] = useState<number>(17);
-  const [customFootfall, setCustomFootfall] = useState<number>(295);
-  const [customLeadTime, setCustomLeadTime] = useState<number>(3.5);
+  const [customTemp, setCustomTemp] = useState<number>(regionalProfile.activeDefaultTempC);
+  const [customHumidity, setCustomHumidity] = useState<number>(regionalProfile.activeDefaultHumidityPct);
+  const [customFootfall, setCustomFootfall] = useState<number>(regionalProfile.activeDefaultFootfall);
+  const [customLeadTime, setCustomLeadTime] = useState<number>(regionalProfile.defaultLeadTimeDays);
   const [showAdvancedControls, setShowAdvancedControls] = useState<boolean>(false);
+
+  // Auto-sync default season when user switches PHC to a different agro-climatic zone
+  React.useEffect(() => {
+    const recommendedSeason = getDefaultSeasonForZone(resolveAgroClimaticZone(selectedPHC));
+    setActiveSeason(recommendedSeason);
+  }, [selectedPHC.id]);
+
+  // Sync environmental sliders & checklist when PHC or activeSeason changes
+  React.useEffect(() => {
+    const profile = getRegionalGeographySeasonProfile(selectedPHC, activeSeason);
+    setSelectedScenarioId('current-orange');
+    setCustomTemp(profile.activeDefaultTempC);
+    setCustomHumidity(profile.activeDefaultHumidityPct);
+    setCustomFootfall(profile.activeDefaultFootfall);
+    setCustomLeadTime(profile.defaultLeadTimeDays);
+    setCompletedActions(
+      profile.recommendedActions.slice(0, 2).map((a) => a.action)
+    );
+  }, [selectedPHC.id, activeSeason]);
 
   // Expanded Alert Reasoning Accordion
   const [expandedReasoning, setExpandedReasoning] = useState<string | null>('ors-alert');
 
   // Checklist Actions
-  const [completedActions, setCompletedActions] = useState<string[]>([
-    'Inspect cold-chain deep freezers for ice-pack storage',
-    'Set up shaded emergency hydration triage corner with clean drinking water'
-  ]);
+  const [completedActions, setCompletedActions] = useState<string[]>(() =>
+    regionalProfile.recommendedActions.slice(0, 2).map((a) => a.action)
+  );
   const [alertDispatched, setAlertDispatched] = useState<boolean>(false);
 
   // Order Modal State
@@ -139,14 +138,14 @@ export const HealthPreparedness: React.FC = () => {
     priority: 'ROUTINE' | 'URGENT' | 'EMERGENCY_REPLENISHMENT';
     justification: string;
   }>({
-    medicineName: 'Oral Rehydration Salts (ORS) Sachets 20.5g',
+    medicineName: 'Oral Rehydration Salts (ORS) Sachets IP 20.5g',
     quantity: 1000,
     priority: 'EMERGENCY_REPLENISHMENT',
-    justification: 'Heatwave surge emergency reorder. Physical stock below lead-time depletion threshold.'
+    justification: 'Regional seasonal surge emergency reorder. Physical stock below lead-time depletion threshold.'
   });
 
   // Apply a Scenario Preset
-  const handleSelectScenario = (scenario: ScenarioPreset) => {
+  const handleSelectScenario = (scenario: RegionalSeasonScenarioPreset) => {
     setSelectedScenarioId(scenario.id);
     setCustomTemp(scenario.temp);
     setCustomHumidity(scenario.humidity);
@@ -169,119 +168,98 @@ export const HealthPreparedness: React.FC = () => {
   const handleBroadcastAlert = () => {
     setAlertDispatched(true);
     showNotification(
-      'Administrative Advisory Broadcast: Heatwave clinical protocols & dehydration kits dispatched to all 8 Sub-Centres.'
+      `Advisory Broadcast: ${regionalProfile.seasonLabel} protocols dispatched to all ${selectedPHC.subCentresCovered} Sub-Centres under ${selectedPHC.name}.`
     );
   };
 
   // -------------------------------------------------------------
-  // TRANSPARENT PREPAREDNESS-RISK MATHEMATICAL MODEL
+  // TRANSPARENT REGIONAL & SEASONAL PREPAREDNESS-RISK MODEL
   // -------------------------------------------------------------
-  // Baseline benchmarks: Normal summer non-surge baseline is 40.5°C, 35% humidity, 180 patients/day
-  const BASELINE_TEMP = 40.5;
-  const BASELINE_HUMIDITY = 35;
-  const BASELINE_FOOTFALL = 180;
+  const BASELINE_TEMP = regionalProfile.baselineTempC;
+  const BASELINE_HUMIDITY = regionalProfile.baselineHumidityPct;
+  const BASELINE_FOOTFALL = regionalProfile.baselineFootfall;
 
-  // 1. Weather Heat Anomaly & Environmental Surge Multiplier (E_w)
-  // Higher temp and lower humidity accelerate insensible perspiration and fluid loss.
+  // 1. Weather & Seasonal Anomaly Multiplier (E_w) tailored by active season
   const tempAnomaly = Math.max(0, customTemp - BASELINE_TEMP);
-  const humidityPenalty = Math.max(0, (BASELINE_HUMIDITY - customHumidity) / 100);
-  const environmentalSurgeFactor = 1 + (tempAnomaly / 10) * 0.75 + humidityPenalty * 0.45;
+  const coldAnomaly = Math.max(0, BASELINE_TEMP - customTemp);
+  const humidityDelta =
+    activeSeason === 'SUMMER_HEATWAVE'
+      ? Math.max(0, (BASELINE_HUMIDITY - customHumidity) / 100)
+      : Math.max(0, (customHumidity - BASELINE_HUMIDITY) / 100);
+
+  const environmentalSurgeFactor =
+    activeSeason === 'SUMMER_HEATWAVE'
+      ? 1 + (tempAnomaly / 10) * 0.8 + humidityDelta * 0.45
+      : activeSeason === 'MONSOON_VECTOR_FLOOD'
+      ? 1 + humidityDelta * 1.15 + (tempAnomaly / 10) * 0.25
+      : activeSeason === 'POST_MONSOON_SCRUB_TYPHUS'
+      ? 1 + humidityDelta * 0.95 + 0.22
+      : 1 + (coldAnomaly / 10) * 0.75 + humidityDelta * 0.35;
 
   // 2. Patient Footfall Surge Ratio (W_f)
-  const footfallRatio = customFootfall / BASELINE_FOOTFALL;
-  // Estimated portion of patients presenting with heat-related dehydration or gastrointestinal fluid loss
-  const heatSyndromicShare = Math.min(0.55, 0.15 + (tempAnomaly / 10) * 0.35 + (footfallRatio - 1) * 0.2);
+  const footfallRatio = customFootfall / Math.max(1, BASELINE_FOOTFALL);
+  const heatSyndromicShare = Math.min(
+    0.65,
+    0.18 + Math.max(0, environmentalSurgeFactor - 1) * 0.45 + Math.max(0, footfallRatio - 1) * 0.22
+  );
 
-  // Calculate live calculations for core formulary items
+  // Calculate live calculations for region- and season-specific formulary items
   const suppliesAnalysis = useMemo(() => {
-    const targets = [
-      {
-        id: 'med-ors-osian',
-        name: 'Oral Rehydration Salts (ORS) Sachets 20.5g',
-        shortName: 'ORS Sachets',
-        unit: 'sachets',
-        category: 'Fluids & Electrolytes',
-        historicalBaseBurn: 45, // normal day burn
-        surgeMultiplier: 2.3, // heatwave clinical elasticity
-        criticalBufferMin: 250,
-        linkedRedistId: 'REDIST-2026-01'
-      },
-      {
-        id: 'med-ns-osian',
-        name: 'Normal Saline (0.9% NaCl) IV Infusion 500ml',
-        shortName: 'Normal Saline (0.9%)',
-        unit: 'bottles',
-        category: 'Intravenous Resuscitation',
-        historicalBaseBurn: 6,
-        surgeMultiplier: 2.8,
-        criticalBufferMin: 50,
-        linkedRedistId: 'REDIST-2026-02'
-      },
-      {
-        id: 'med-rl-osian',
-        name: 'Ringer Lactate Injection 500ml',
-        shortName: 'Ringer Lactate (RL)',
-        unit: 'bottles',
-        category: 'Intravenous Resuscitation',
-        historicalBaseBurn: 5,
-        surgeMultiplier: 2.6,
-        criticalBufferMin: 40,
-        linkedRedistId: null
-      },
-      {
-        id: 'med-pcm-osian',
-        name: 'Paracetamol Tablets IP 500mg',
-        shortName: 'Paracetamol 500mg',
-        unit: 'tablets',
-        category: 'Antipyretics',
-        historicalBaseBurn: 110,
-        surgeMultiplier: 1.35,
-        criticalBufferMin: 800,
-        linkedRedistId: null
-      },
-      {
-        id: 'med-zn-osian',
-        name: 'Zinc Sulfate Dispersible Tablets 20mg',
-        shortName: 'Zinc Sulfate 20mg',
-        unit: 'tablets',
-        category: 'Pediatric Care',
-        historicalBaseBurn: 25,
-        surgeMultiplier: 1.7,
-        criticalBufferMin: 150,
-        linkedRedistId: null
-      }
-    ];
+    const targets = regionalProfile.targetSupplies;
 
     return targets.map((item) => {
-      const liveMed = medicines.find((m) => m.id === item.id) || {
-        currentStock: item.criticalBufferMin,
-        dailyConsumption: item.historicalBaseBurn,
-        pendingOrders: 0
-      };
+      const liveMed =
+        medicines.find(
+          (m) =>
+            m.id === item.id ||
+            m.name.toLowerCase() === item.name.toLowerCase() ||
+            m.name.toLowerCase().includes(item.shortName.split(' ')[0].toLowerCase())
+        ) || {
+          id: item.id,
+          phcId: selectedPHC.id,
+          name: item.name,
+          unit: item.unit,
+          currentStock: item.criticalBufferMin,
+          dailyConsumption: item.historicalBaseBurn,
+          minStockLevel: item.criticalBufferMin,
+          maxStockLevel: item.criticalBufferMin * 5,
+          pendingOrders: 0
+        };
 
       // Current logged consumption
       const currentBurn = liveMed.dailyConsumption;
 
-      // Weather & Footfall Projected Surge Burn:
-      // Form: BaseBurn * (1 + (environmentalSurgeFactor - 1) * surgeMultiplier) * (footfallRatio * 0.7 + 0.3)
+      // Weather, Geography & Footfall Projected Surge Burn:
       const projectedDailyBurn = Math.max(
         item.historicalBaseBurn,
         Math.round(
           item.historicalBaseBurn *
-            (1 + (environmentalSurgeFactor - 1) * (item.surgeMultiplier - 1) * 1.5) *
+            (1 + Math.max(0.05, environmentalSurgeFactor - 1) * (item.surgeMultiplier - 1) * 1.45) *
             (footfallRatio * 0.75 + 0.25)
         )
       );
 
-      // Days of safe stock remaining
-      const effectiveStock = liveMed.currentStock + liveMed.pendingOrders;
-      const daysOfSafeStock =
-        projectedDailyBurn > 0 ? parseFloat((effectiveStock / projectedDailyBurn).toFixed(1)) : 99.9;
+      const surgeRatio = currentBurn > 0 ? projectedDailyBurn / currentBurn : 1.0;
+      const forecast = calculateMedicineForecast({
+        medicine: liveMed,
+        phcName: selectedPHC.name,
+        leadTimeDays: customLeadTime,
+        safetyBufferDays: 3.0,
+        replenishmentCycleDays: 14,
+        demandSurgeMultiplier: surgeRatio,
+        consumptionPeriodDays: 30,
+        isSyntheticData: true
+      });
 
-      // Deficit before Mandore warehouse truck arrives
+      // Days of usable stock remaining
+      const effectiveStock = forecast.usableStock + forecast.pendingInwardStock;
+      const daysOfSafeStock =
+        forecast.estimatedDaysRemaining !== null ? forecast.estimatedDaysRemaining : 99.9;
+
+      // Deficit before district warehouse truck arrives
       const deficitDays = parseFloat((customLeadTime - daysOfSafeStock).toFixed(1));
       const projectedDeficitUnits =
-        deficitDays > 0 ? Math.round(deficitDays * projectedDailyBurn + item.criticalBufferMin * 0.5) : 0;
+        deficitDays > 0 ? Math.round(deficitDays * projectedDailyBurn + forecast.safetyStock * 0.5) : 0;
 
       // Risk score: 0 to 100
       let riskScore = 0;
@@ -294,76 +272,95 @@ export const HealthPreparedness: React.FC = () => {
       }
 
       const urgency: 'CRITICAL' | 'WARNING' | 'NORMAL' =
-        riskScore >= 70 ? 'CRITICAL' : riskScore >= 45 ? 'WARNING' : 'NORMAL';
+        forecast.riskLevel === 'CRITICAL'
+          ? 'CRITICAL'
+          : forecast.riskLevel === 'WARNING'
+          ? 'WARNING'
+          : 'NORMAL';
 
       return {
         ...item,
-        currentStock: liveMed.currentStock,
-        pendingOrders: liveMed.pendingOrders,
+        currentStock: forecast.usableStock,
+        totalPhysicalStock: forecast.totalPhysicalStock,
+        expiredBatchStock: forecast.expiredBatchStock,
+        pendingOrders: forecast.pendingInwardStock,
         effectiveStock,
         currentBurn,
         projectedDailyBurn,
         daysOfSafeStock,
+        estimatedStockoutDate: forecast.estimatedStockoutDate,
+        safetyStock: forecast.safetyStock,
+        reorderPoint: forecast.reorderPoint,
         leadTimeDays: customLeadTime,
         deficitDays,
         projectedDeficitUnits,
         riskScore,
         urgency,
-        recommendedReorder: Math.max(
-          100,
-          Math.ceil((projectedDailyBurn * 20 + item.criticalBufferMin - effectiveStock) / 50) * 50
-        )
+        primaryRiskReason: forecast.primaryRiskReason,
+        recommendedReorder: forecast.suggestedReplenishmentQty
       };
     });
-  }, [medicines, environmentalSurgeFactor, footfallRatio, customLeadTime]);
+  }, [
+    regionalProfile.targetSupplies,
+    medicines,
+    selectedPHC.id,
+    selectedPHC.name,
+    environmentalSurgeFactor,
+    footfallRatio,
+    customLeadTime
+  ]);
 
   // Overall Facility Preparedness Index (0 - 100)
   const facilityPreparednessIndex = useMemo(() => {
     const avgRisk =
-      suppliesAnalysis.reduce((acc, curr) => acc + curr.riskScore, 0) / suppliesAnalysis.length;
+      suppliesAnalysis.reduce((acc, curr) => acc + curr.riskScore, 0) / Math.max(1, suppliesAnalysis.length);
     return Math.max(10, Math.min(100, Math.round(100 - avgRisk * 0.75)));
   }, [suppliesAnalysis]);
 
-  // Handle Dispatch of Emergency RMSCL Indent directly
-  const handleCreateEmergencyIndent = async (item: (typeof suppliesAnalysis)[0]) => {
-    await createOrder({
+  // Handle Dispatch of Emergency Warehouse Indent directly
+  const handleCreateEmergencyIndent = async (item: EvaluatedSupplyItem) => {
+    const ok = await createOrder({
       medicineName: item.name,
       quantityRequested: item.recommendedReorder,
       priority: 'EMERGENCY_REPLENISHMENT',
-      justification: `IMD Heatwave Surge: Depletion projected in ${item.daysOfSafeStock} days vs ${item.leadTimeDays} days delivery window. Deficit: ${item.projectedDeficitUnits} ${item.unit}.`
+      justification: `${regionalProfile.seasonLabel} (${selectedPHC.district} • ${regionalProfile.zoneBadge}): Depletion projected in ${item.daysOfSafeStock} days vs ${item.leadTimeDays} days delivery window. Deficit: ${item.projectedDeficitUnits} ${item.unit}.`
     });
 
-    showNotification(
-      `Emergency Replenishment Indent created: ${item.recommendedReorder} ${item.unit} of ${item.shortName}. Sent to RMSCL Mandore.`
-    );
+    if (ok) {
+      showNotification(
+        `Emergency Replenishment Indent created: ${item.recommendedReorder} ${item.unit} of ${item.shortName}. Sent to ${regionalProfile.warehouseHubName}.`
+      );
+    }
   };
 
   // Handle Sister-PHC Lateral Redistribution Transfer
   const handleApproveLateralTransfer = async (redistId: string, name: string) => {
-    await approveRedistribution(redistId);
-    showNotification(
-      `Inter-PHC Transfer Approved: Emergency dispatch of ${name} from PHC Mandore dispatched via green corridor (ETA 1.2 hrs).`
-    );
+    const ok = await approveRedistribution(redistId);
+    if (ok) {
+      showNotification(
+        `Inter-PHC Transfer Approved: Emergency dispatch of ${name} dispatched via green corridor.`
+      );
+    }
   };
 
   // Open Reorder Modal Pre-filled
-  const handleOpenCustomReorderModal = (item: (typeof suppliesAnalysis)[0]) => {
+  const handleOpenCustomReorderModal = (item: EvaluatedSupplyItem) => {
     setOrderModalData({
       medicineName: item.name,
       quantity: item.recommendedReorder,
       priority: 'EMERGENCY_REPLENISHMENT',
-      justification: `Heatwave Epidemiological Surge: ${customTemp}°C ambient heatwave with ${(
+      justification: `${regionalProfile.seasonLabel} (${selectedPHC.district} • ${regionalProfile.zoneName}): ${customTemp}°C, ${customHumidity}% RH with ${(
         heatSyndromicShare * 100
-      ).toFixed(0)}% dehydration syndromic cluster presentations. Stock covers ${item.daysOfSafeStock} days against ${
+      ).toFixed(0)}% syndromic cluster presentations. Stock covers ${item.daysOfSafeStock} days against ${
         item.leadTimeDays
-      } days RMSCL lead time.`
+      } days warehouse lead time.`
     });
     setIsOrderModalOpen(true);
   };
 
   // Chart data comparing Baseline vs Current vs Projected Surge Burn
   const chartData = useMemo(() => {
-    return suppliesAnalysis.slice(0, 4).map((s) => ({
+    return suppliesAnalysis.slice(0, 5).map((s) => ({
       name: s.shortName,
       historical: s.historicalBaseBurn,
       current: s.currentBurn,
@@ -371,12 +368,103 @@ export const HealthPreparedness: React.FC = () => {
     }));
   }, [suppliesAnalysis]);
 
-  const activeScenario = SCENARIOS.find((s) => s.id === selectedScenarioId);
-  const activeScenarioName = activeScenario ? activeScenario.name : 'Custom Meteorological Simulation';
+  const activeScenario = regionalProfile.scenarios.find((s) => s.id === selectedScenarioId);
+  const activeScenarioName = activeScenario ? activeScenario.name : 'Custom Regional Meteorological Simulation';
 
   // PDF Report Export State
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [selectedMedicineId, setSelectedMedicineId] = useState<string>(() => suppliesAnalysis[0]?.id || 'med-ors-osian');
+  const [selectedFormularyMedId, setSelectedFormularyMedId] = useState<string>(() => medicines[0]?.id || '');
+
+  // What-If Supply Disruption Simulation State (Strictly Read-Only — never mutates inventory/orders/transfers)
+  const [simPHCId, setSimPHCId] = useState<string>(() => selectedPHC.id);
+  const [hypotheticalDelayDays, setHypotheticalDelayDays] = useState<number>(3.0);
+
+  // Sync simPHCId when global selectedPHC changes
+  React.useEffect(() => {
+    setSimPHCId(selectedPHC.id);
+  }, [selectedPHC.id]);
+
+  // Resolve target PHC and its formulary medicines for inspection/simulation without mutating global state
+  const targetSimPHC = useMemo(() => {
+    return facilities.find((f) => f.id === simPHCId) || selectedPHC;
+  }, [facilities, simPHCId, selectedPHC]);
+
+  const targetSimMedicines = useMemo(() => {
+    if (targetSimPHC.id === selectedPHC.id) {
+      return medicines;
+    }
+    return generateEssentialMedicinesForPHC(
+      targetSimPHC.id,
+      `${targetSimPHC.district} District Drug Warehouse`
+    );
+  }, [targetSimPHC, selectedPHC.id, medicines]);
+
+  // Keep selectedFormularyMedId synced when PHC changes or user selects a medicine tab
+  const activeFormularyMed = useMemo(() => {
+    const byFormularyId = targetSimMedicines.find((m) => m.id === selectedFormularyMedId);
+    if (byFormularyId) return byFormularyId;
+    // Try matching by name if user switched simPHCId
+    const prevMed = medicines.find((m) => m.id === selectedFormularyMedId);
+    if (prevMed) {
+      const byName = targetSimMedicines.find((m) => m.name === prevMed.name);
+      if (byName) return byName;
+    }
+    return targetSimMedicines[0];
+  }, [targetSimMedicines, medicines, selectedFormularyMedId]);
+
+  const activeScenarioMult = useMemo(() => {
+    return selectedScenarioId === 'baseline-relief'
+      ? 1.0
+      : Number((1 + (environmentalSurgeFactor - 1) * 0.65).toFixed(2));
+  }, [selectedScenarioId, environmentalSurgeFactor]);
+
+  const activeDeterministicForecast = useMemo(() => {
+    if (!activeFormularyMed) return null;
+    return calculateMedicineForecast({
+      medicine: activeFormularyMed,
+      phcName: targetSimPHC.name,
+      leadTimeDays: customLeadTime,
+      safetyBufferDays: 3.0,
+      replenishmentCycleDays: 14,
+      demandSurgeMultiplier: activeScenarioMult,
+      consumptionPeriodDays: 30,
+      isSyntheticData: true
+    });
+  }, [activeFormularyMed, targetSimPHC.name, customLeadTime, activeScenarioMult]);
+
+  // Pure Read-Only What-If Supply Disruption Simulation Result
+  const supplyDisruptionSimulation = useMemo(() => {
+    if (!activeFormularyMed) return null;
+    const candidateDonors = facilities
+      .filter((f) => f.id !== targetSimPHC.id)
+      .map((f) => ({
+        phc: f,
+        medicines:
+          f.id === selectedPHC.id
+            ? medicines
+            : generateEssentialMedicinesForPHC(f.id, `${f.district} District Drug Warehouse`)
+      }));
+
+    return simulateSupplyDisruption({
+      recipientPHC: targetSimPHC,
+      recipientMedicine: activeFormularyMed,
+      baseLeadTimeDays: customLeadTime,
+      deliveryDelayDays: hypotheticalDelayDays,
+      demandSurgeMultiplier: activeScenarioMult,
+      candidateDonors,
+      referenceDate: '2026-09-22'
+    });
+  }, [
+    activeFormularyMed,
+    facilities,
+    targetSimPHC,
+    selectedPHC.id,
+    medicines,
+    customLeadTime,
+    hypotheticalDelayDays,
+    activeScenarioMult
+  ]);
 
   // "Why This Alert?" Modal State
   const [whyAlertModalData, setWhyAlertModalData] = useState<AlertMathBreakdown | null>(null);
@@ -423,18 +511,18 @@ export const HealthPreparedness: React.FC = () => {
         <div>
           <div className="flex items-center gap-2">
             <span className="text-[10px] font-bold text-amber-900 bg-amber-100/90 px-2.5 py-0.5 rounded font-mono uppercase tracking-wider">
-              IMD Meteorological Telemetry
+              Demand Estimation &amp; Surge Forecast
             </span>
-            <span className="text-xs text-slate-500 font-mono">
-              Rajasthan Heatwave Epidemiological Model
+            <span className="text-xs text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded font-mono">
+              Synthetic Weather &amp; Consumption Simulation • Deterministic + Optional Gemini AI
             </span>
           </div>
           <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight mt-1 flex items-center gap-2">
             <CloudSun className="w-5 h-5 text-amber-600" />
-            <span>Seasonal & Climate Health Preparedness Intelligence</span>
+            <span>Seasonal Medicine Demand Estimation &amp; Stock-Out Forecast</span>
           </h1>
           <p className="text-xs text-slate-600 mt-0.5">
-            Real-time integration of India Meteorological Department signals, patient footfall surges, and lead-time supply vulnerability for <strong>{selectedPHC.name}</strong>.
+            Simulate how ambient temperature, patient footfall, and delivery lead times impact essential medicine depletion and replenishment requirements at <strong>{selectedPHC.name}</strong>.
           </p>
         </div>
 
@@ -482,6 +570,159 @@ export const HealthPreparedness: React.FC = () => {
         </div>
       </div>
 
+      {/* 1B. Location Geography, District Hazard Profile & Seasonal Selector Bar */}
+      <div className="bg-white rounded-xl border border-slate-200/90 shadow-xs p-4 sm:p-5 space-y-4">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[10px] font-bold font-mono uppercase tracking-wider px-2.5 py-0.5 rounded bg-emerald-100 text-emerald-900 border border-emerald-300">
+                {regionalProfile.zoneBadge}
+              </span>
+              <span className="text-[11px] font-mono font-bold text-slate-700 bg-slate-100 px-2.5 py-0.5 rounded border border-slate-200">
+                District: {selectedPHC.district}, {selectedPHC.state}
+              </span>
+              <span className="text-[11px] font-mono text-indigo-800 bg-indigo-50 px-2.5 py-0.5 rounded border border-indigo-200">
+                Hub: {regionalProfile.warehouseHubName} ({regionalProfile.defaultLeadTimeDays}d Transit)
+              </span>
+            </div>
+            <h2 className="text-sm sm:text-base font-bold text-slate-900">
+              {regionalProfile.zoneName} — Geography &amp; Seasonal Epidemiology Calibration
+            </h2>
+            <p className="text-xs text-slate-600 leading-relaxed max-w-4xl">
+              {regionalProfile.geographicalCharacteristics} <strong>Topography &amp; Water:</strong> {regionalProfile.topographyAndWaterNote}
+            </p>
+          </div>
+
+          {/* Quick PHC / District Geography Switcher */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 shrink-0 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+            <div className="text-[11px] font-bold text-slate-700 px-1">
+              Active Facility &amp; Geography:
+            </div>
+            <select
+              aria-label="Switch PHC Location for Demand Forecast"
+              value={selectedPHC.id}
+              onChange={(e) => {
+                const found = facilities.find((f) => f.id === e.target.value);
+                if (found) {
+                  setSelectedPHC(found);
+                  showNotification(`Switched Demand Forecast to ${found.name} (${found.district})`);
+                }
+              }}
+              className="bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+            >
+              {facilities.map((f) => {
+                const z = resolveAgroClimaticZone(f);
+                const zTag =
+                  z === 'THAR_HYPER_ARID_DESERT'
+                    ? 'Thar Desert Heatwave Belt'
+                    : z === 'ARAVALLI_TRIBAL_FOREST_HILLS'
+                    ? 'Aravalli Tribal Hills (Vector/Snakebite)'
+                    : z === 'CHAMBAL_HADOTI_RIVERINE_BASIN'
+                    ? 'Chambal Riverine (Dengue/Scrub Typhus)'
+                    : z === 'SEMI_ARID_MARWAR_SHEKHAWATI'
+                    ? 'Marwar/Shekhawati Thermal Swing'
+                    : z === 'EASTERN_FLOOD_NCR_PLAINS'
+                    ? 'Eastern Semi-Arid Plains'
+                    : z === 'CANAL_IRRIGATED_GHAGGAR_PLAINS'
+                    ? 'Canal Irrigated Ghaggar Belt'
+                    : f.state;
+                return (
+                  <option key={f.id} value={f.id}>
+                    {f.name} — {f.district} [{zTag}]
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+        </div>
+
+        {/* 4-Season Selector Tabs + District Representative Quick-Jump Buttons */}
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3">
+          <div className="space-y-1.5">
+            <div className="text-[10px] font-mono font-bold uppercase tracking-wider text-slate-500">
+              Select Seasonal Epidemiological Regime (Recalibrates Weather, Syndromes &amp; Drug Elasticity):
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+              {SEASON_OPTIONS.map((sOpt) => {
+                const isActive = activeSeason === sOpt.key;
+                const isZoneRecommended =
+                  getDefaultSeasonForZone(resolveAgroClimaticZone(selectedPHC)) === sOpt.key;
+                return (
+                  <button
+                    key={sOpt.key}
+                    type="button"
+                    onClick={() => {
+                      setActiveSeason(sOpt.key);
+                      showNotification(`Season switched to ${sOpt.label} (${sOpt.months}) for ${selectedPHC.district}`);
+                    }}
+                    className={`px-3 py-2 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                      isActive
+                        ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                        : 'bg-slate-50 hover:bg-slate-100 text-slate-800 border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span className="text-xs font-bold truncate">{sOpt.label}</span>
+                      {isZoneRecommended && (
+                        <span
+                          className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded uppercase shrink-0 ${
+                            isActive
+                              ? 'bg-amber-400 text-slate-950'
+                              : 'bg-amber-100 text-amber-900 border border-amber-300'
+                          }`}
+                        >
+                          Peak Risk
+                        </span>
+                      )}
+                    </div>
+                    <span className={`text-[10px] font-mono mt-0.5 ${isActive ? 'text-slate-300' : 'text-slate-500'}`}>
+                      {sOpt.months}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Quick Regional Archetype Switcher for Rajasthan Districts */}
+          <div className="space-y-1.5 shrink-0">
+            <div className="text-[10px] font-mono font-bold uppercase tracking-wider text-slate-500">
+              Compare Rajasthan District Geographies:
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {[
+                { label: 'Thar Heatwave (Jodhpur/Jaisalmer)', matchId: 'phc-osian' },
+                { label: 'Aravalli Tribal (Udaipur/Kotra)', matchId: 'phc-kotra' },
+                { label: 'Chambal Basin (Kota/Hadoti)', matchId: 'phc-sultanpur-kota' },
+                { label: 'Frost/Loo Belt (Churu/Sikar)', matchId: 'phc-fatehpur-sikar' },
+                { label: 'Semi-Arid Plains (Jaipur)', matchId: 'phc-sanganer' }
+              ].map((preset) => {
+                const targetFacility = facilities.find((f) => f.id === preset.matchId);
+                if (!targetFacility) return null;
+                const isSelected = selectedPHC.id === targetFacility.id;
+                return (
+                  <button
+                    key={preset.matchId}
+                    type="button"
+                    onClick={() => {
+                      setSelectedPHC(targetFacility);
+                      showNotification(`Switched to ${targetFacility.name} (${targetFacility.district})`);
+                    }}
+                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
+                      isSelected
+                        ? 'bg-emerald-700 text-white border-emerald-700'
+                        : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* 2. Institutional Early Warning Advisory Banner with Non-Diagnostic Disclaimer */}
       <div
         role="region"
@@ -495,9 +736,9 @@ export const HealthPreparedness: React.FC = () => {
           <div className="space-y-1 flex-1">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="font-bold text-sm text-amber-950 flex items-center gap-2">
-                <span>IMD Level-3 Severe Heatwave Warning: Western Rajasthan Desert Belt</span>
+                <span>{regionalProfile.advisoryTitle}</span>
                 <span className="text-[10px] font-bold font-mono px-2 py-0.5 rounded bg-amber-200 text-amber-900 border border-amber-300 uppercase">
-                  Telemetry Active
+                  {regionalProfile.seasonLabel} ({regionalProfile.seasonMonths})
                 </span>
               </div>
               <div className="text-xs font-mono font-bold text-amber-900 bg-amber-200/80 px-2.5 py-1 rounded">
@@ -505,7 +746,10 @@ export const HealthPreparedness: React.FC = () => {
               </div>
             </div>
             <p className="text-xs text-amber-900 leading-relaxed font-medium">
-              Maximum temperatures are persisting between <strong>{customTemp}°C and 45.8°C</strong> across the Thar desert fringe. Historical surveillance demonstrates an estimated <strong>65% surge in acute dehydration</strong> and a <strong>3.5× spike in heat exhaustion syndromes</strong>.
+              {regionalProfile.advisorySummary}{' '}
+              <span className="font-mono font-bold">
+                [Active Env: {customTemp}°C • {customHumidity}% RH • {customFootfall} OPD/day]
+              </span>
             </p>
           </div>
         </div>
@@ -514,21 +758,47 @@ export const HealthPreparedness: React.FC = () => {
         <div className="bg-amber-100/70 rounded-lg p-2.5 border border-amber-200 flex items-start gap-2 text-[11px] text-amber-950">
           <Info className="w-4 h-4 text-amber-800 shrink-0 mt-0.5" />
           <p className="leading-relaxed">
-            <strong>Epidemiological Surveillance Notice:</strong> This module models aggregate population-level footfall surges and syndromic clusters (acute dehydration, vomiting, heat exhaustion) to calculate supply-chain buffers and logistics lead times. <em>It does not assert clinical individual disease diagnosis, etiology, or clinical certainty.</em>
+            <strong>Epidemiological Surveillance Notice ({selectedPHC.district}):</strong>{' '}
+            {regionalProfile.primarySyndromicClusters.map((c) => `${c.condition} (${c.projectedIncrease})`).join(' • ')}.{' '}
+            <em>It does not assert clinical individual disease diagnosis, etiology, or clinical certainty.</em>
           </p>
         </div>
       </div>
 
-      {/* 3. Interactive Rajasthan Heatwave Simulation Scenarios */}
+      {/* 2B. Machine Learning + Gemini AI Proactive Surge Capacity Alert Service */}
+      <MLSurgeCapacityAlertsPanel
+        phc={selectedPHC}
+        medicines={medicines}
+        temperatureC={customTemp}
+        humidityPct={customHumidity}
+        currentOpdFootfall={customFootfall}
+        leadTimeDays={customLeadTime}
+        activeSeason={activeSeason}
+        onSeasonChange={(newSeason) => setActiveSeason(newSeason)}
+        onDispatchEmergencyOrder={async (medicineName, qty, justification) => {
+          await createOrder({
+            medicineName,
+            quantityRequested: qty,
+            priority: 'EMERGENCY_REPLENISHMENT',
+            justification
+          });
+        }}
+        onNavigateModule={setActiveModule}
+        onShowNotification={showNotification}
+      />
+
+      {/* 3. Interactive Regional & Seasonal Simulation Scenarios */}
       <div className="bg-white rounded-xl border border-slate-200/90 shadow-xs p-5 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
           <div>
             <h2 className="font-bold text-sm text-slate-900 flex items-center gap-2">
               <Sliders className="w-4 h-4 text-emerald-600" />
-              <span>Rajasthan Heatwave Simulation & Stress-Test Presets</span>
+              <span>
+                {selectedPHC.district} ({regionalProfile.zoneBadge}) — {regionalProfile.seasonLabel} Stress-Test Presets
+              </span>
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Select or tune environmental conditions to preview dynamic supply buffer depletion across western Rajasthan.
+              Select or tune environmental conditions for <strong>{selectedPHC.name}</strong> during <strong>{regionalProfile.seasonLabel} ({regionalProfile.seasonMonths})</strong>.
             </p>
           </div>
 
@@ -544,7 +814,7 @@ export const HealthPreparedness: React.FC = () => {
 
         {/* Preset Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {SCENARIOS.map((sc) => {
+          {regionalProfile.scenarios.map((sc) => {
             const isSelected = selectedScenarioId === sc.id;
             return (
               <div
@@ -571,10 +841,14 @@ export const HealthPreparedness: React.FC = () => {
                   <p className="text-slate-600 text-[11px] mt-1 leading-relaxed">{sc.description}</p>
                 </div>
 
-                <div className="mt-3 pt-2 border-t border-slate-200/80 grid grid-cols-3 gap-1 text-[10px] font-mono text-slate-700">
+                <div className="mt-3 pt-2 border-t border-slate-200/80 grid grid-cols-4 gap-1 text-[10px] font-mono text-slate-700">
                   <div>
                     <span className="text-slate-400 block font-sans">Temp:</span>
                     <strong className="text-slate-900">{sc.temp}°C</strong>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block font-sans">Humidity:</span>
+                    <strong className="text-slate-900">{sc.humidity}%</strong>
                   </div>
                   <div>
                     <span className="text-slate-400 block font-sans">Footfall:</span>
@@ -600,9 +874,9 @@ export const HealthPreparedness: React.FC = () => {
               </div>
               <input
                 type="range"
-                min="38"
-                max="48"
-                step="0.2"
+                min="4"
+                max="49"
+                step="0.5"
                 value={customTemp}
                 onChange={(e) => {
                   setCustomTemp(parseFloat(e.target.value));
@@ -610,7 +884,9 @@ export const HealthPreparedness: React.FC = () => {
                 }}
                 className="w-full accent-rose-600 cursor-pointer"
               />
-              <span className="text-[10px] text-slate-500">Anomaly: +{(customTemp - BASELINE_TEMP).toFixed(1)}°C</span>
+              <span className="text-[10px] text-slate-500">
+                Normal Seasonal Base: {regionalProfile.baselineTempC}°C
+              </span>
             </div>
 
             <div>
@@ -620,8 +896,8 @@ export const HealthPreparedness: React.FC = () => {
               </div>
               <input
                 type="range"
-                min="10"
-                max="60"
+                min="8"
+                max="96"
                 step="1"
                 value={customHumidity}
                 onChange={(e) => {
@@ -630,7 +906,9 @@ export const HealthPreparedness: React.FC = () => {
                 }}
                 className="w-full accent-blue-600 cursor-pointer"
               />
-              <span className="text-[10px] text-slate-500">Dry spell fluid drain</span>
+              <span className="text-[10px] text-slate-500">
+                Normal Seasonal RH: {regionalProfile.baselineHumidityPct}%
+              </span>
             </div>
 
             <div>
@@ -640,8 +918,8 @@ export const HealthPreparedness: React.FC = () => {
               </div>
               <input
                 type="range"
-                min="150"
-                max="400"
+                min="120"
+                max="440"
                 step="5"
                 value={customFootfall}
                 onChange={(e) => {
@@ -650,18 +928,20 @@ export const HealthPreparedness: React.FC = () => {
                 }}
                 className="w-full accent-emerald-600 cursor-pointer"
               />
-              <span className="text-[10px] text-slate-500">Normal base: 180 patients</span>
+              <span className="text-[10px] text-slate-500">
+                Normal base: {regionalProfile.baselineFootfall} patients
+              </span>
             </div>
 
             <div>
               <div className="flex justify-between font-bold text-slate-800 mb-1">
-                <span>RMSCL Transit Lead Time:</span>
+                <span>Warehouse Transit Lead Time:</span>
                 <span className="font-mono text-amber-800">{customLeadTime.toFixed(1)} Days</span>
               </div>
               <input
                 type="range"
                 min="1.0"
-                max="6.0"
+                max="7.5"
                 step="0.5"
                 value={customLeadTime}
                 onChange={(e) => {
@@ -670,108 +950,547 @@ export const HealthPreparedness: React.FC = () => {
                 }}
                 className="w-full accent-amber-600 cursor-pointer"
               />
-              <span className="text-[10px] text-slate-500">Mandore Hub to Osian Store</span>
+              <span className="text-[10px] text-slate-500 truncate block">
+                {regionalProfile.warehouseHubName}
+              </span>
             </div>
           </div>
         )}
       </div>
 
-      {/* 4. The 6-Input Matrix Overview */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-        {/* Input 1: Weather Signal */}
-        <div className="bg-white rounded-xl border border-slate-200/90 p-3.5 shadow-xs flex flex-col justify-between">
-          <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center justify-between">
-            <span>1. Weather Signal</span>
-            <Thermometer className="w-3.5 h-3.5 text-rose-500" />
-          </div>
-          <div className="mt-2">
-            <div className="text-xl font-bold font-mono text-rose-700">{customTemp}°C</div>
-            <div className="text-[10px] text-slate-500 mt-0.5">
-              Heat Index: {(customTemp * 1.05).toFixed(1)}°C
+      {/* 4. Selected Medicine & PHC Deterministic Demand & Stock-Out Forecast Inspector */}
+      {activeFormularyMed && activeDeterministicForecast && (
+        <div className="bg-white rounded-xl border border-slate-200/90 shadow-xs p-5 space-y-4">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-slate-100 pb-3.5">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] font-bold font-mono px-2.5 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 uppercase">
+                  {activeDeterministicForecast.estimateBadgeLabel}
+                </span>
+                <span className="text-xs font-mono text-slate-600">
+                  PHC: <strong className="text-slate-900">{targetSimPHC.name}</strong> ({targetSimPHC.district})
+                </span>
+              </div>
+              <h2 className="text-base font-bold text-slate-900 mt-1 flex items-center gap-2">
+                <Calculator className="w-4 h-4 text-emerald-600" />
+                <span>Selected Medicine &amp; PHC Deterministic Demand &amp; Stock-Out Forecast</span>
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                {activeDeterministicForecast.disclaimerText}
+              </p>
+            </div>
+
+            {/* PHC & Medicine Selector Dropdowns across all PHCs and Formulary Items */}
+            <div className="flex flex-wrap items-center gap-2.5">
+              <div className="flex items-center gap-1.5">
+                <label htmlFor="forecast-phc-select" className="text-xs font-bold text-slate-700">
+                  PHC:
+                </label>
+                <select
+                  id="forecast-phc-select"
+                  value={targetSimPHC.id}
+                  onChange={(e) => setSimPHCId(e.target.value)}
+                  className="bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+                >
+                  {facilities.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.name} ({f.district})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <label htmlFor="forecast-med-select" className="text-xs font-bold text-slate-700">
+                  Medicine ({targetSimMedicines.length}):
+                </label>
+                <select
+                  id="forecast-med-select"
+                  value={activeFormularyMed.id}
+                  onChange={(e) => {
+                    const newId = e.target.value;
+                    setSelectedFormularyMedId(newId);
+                    const chosen = targetSimMedicines.find((m) => m.id === newId);
+                    if (chosen) {
+                      const matchSupply = suppliesAnalysis.find((s) =>
+                        chosen.name.toLowerCase().includes(s.shortName.split(' ')[0].toLowerCase())
+                      );
+                      if (matchSupply) setSelectedMedicineId(matchSupply.id);
+                    }
+                  }}
+                  className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+                >
+                  {targetSimMedicines.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name} ({m.currentStock} {m.unit} • {m.stockoutRisk})
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
           </div>
-          <div className="mt-2 pt-1.5 border-t border-slate-100 text-[10px] font-mono text-rose-900 font-bold">
-            Env Mult: {environmentalSurgeFactor.toFixed(2)}x
-          </div>
-        </div>
 
-        {/* Input 2: Historical Consumption */}
-        <div className="bg-white rounded-xl border border-slate-200/90 p-3.5 shadow-xs flex flex-col justify-between">
-          <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center justify-between">
-            <span>2. Historical Base</span>
-            <Calendar className="w-3.5 h-3.5 text-slate-400" />
-          </div>
-          <div className="mt-2">
-            <div className="text-xl font-bold font-mono text-slate-800">45 pkts</div>
-            <div className="text-[10px] text-slate-500 mt-0.5">ORS Non-Surge Base</div>
-          </div>
-          <div className="mt-2 pt-1.5 border-t border-slate-100 text-[10px] font-mono text-slate-600">
-            DHS 2025 Registry
-          </div>
-        </div>
+          {/* 6-Metric Deterministic Summary Strip for Selected Medicine & PHC */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs">
+            {/* 1. Usable Stock Excluding Expired */}
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between">
+              <span className="text-[10px] font-bold uppercase text-slate-500">
+                1. Current Usable Stock
+              </span>
+              <div className="mt-1.5">
+                <div className="text-xl font-bold font-mono text-slate-900">
+                  {activeDeterministicForecast.usableStock} {activeDeterministicForecast.unit}
+                </div>
+                <div className="text-[10px] text-slate-500 mt-0.5">
+                  Physical: {activeDeterministicForecast.totalPhysicalStock} • Expired: {activeDeterministicForecast.expiredBatchStock}
+                </div>
+              </div>
+              <div className="mt-2 pt-1.5 border-t border-slate-200/80 text-[10px] font-mono text-emerald-800 font-bold">
+                {activeDeterministicForecast.expiredBatchStock > 0
+                  ? `Excl. ${activeDeterministicForecast.expiredBatchStock} expired`
+                  : 'All batches active'}
+              </div>
+            </div>
 
-        {/* Input 3: Current Consumption */}
-        <div className="bg-white rounded-xl border border-slate-200/90 p-3.5 shadow-xs flex flex-col justify-between">
-          <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center justify-between">
-            <span>3. Current Burn</span>
-            <TrendingUp className="w-3.5 h-3.5 text-amber-600" />
-          </div>
-          <div className="mt-2">
-            <div className="text-xl font-bold font-mono text-amber-700">58 pkts</div>
-            <div className="text-[10px] text-slate-500 mt-0.5">Logged last 48 hrs</div>
-          </div>
-          <div className="mt-2 pt-1.5 border-t border-slate-100 text-[10px] font-mono text-amber-800 font-bold">
-            +28% Initial Burn
-          </div>
-        </div>
+            {/* 2. Recent Average Daily Consumption & Period */}
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between">
+              <span className="text-[10px] font-bold uppercase text-slate-500">
+                2. Avg Daily Consumption
+              </span>
+              <div className="mt-1.5">
+                <div className="text-xl font-bold font-mono text-slate-900">
+                  {activeDeterministicForecast.recentAvgDailyConsumption ?? 'N/A'}{' '}
+                  <span className="text-xs font-normal">{activeDeterministicForecast.unit}/d</span>
+                </div>
+                <div className="text-[10px] text-slate-500 mt-0.5">
+                  Period: Last {activeDeterministicForecast.consumptionPeriodDays} days
+                </div>
+              </div>
+              <div className="mt-2 pt-1.5 border-t border-slate-200/80 text-[10px] font-mono text-amber-800 font-bold">
+                Active Burn: {activeDeterministicForecast.effectiveDailyDemand ?? 'N/A'}/d ({activeDeterministicForecast.demandSurgeMultiplier}x)
+              </div>
+            </div>
 
-        {/* Input 4: Patient Footfall */}
-        <div className="bg-white rounded-xl border border-slate-200/90 p-3.5 shadow-xs flex flex-col justify-between">
-          <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center justify-between">
-            <span>4. Patient Footfall</span>
-            <Building2 className="w-3.5 h-3.5 text-emerald-600" />
-          </div>
-          <div className="mt-2">
-            <div className="text-xl font-bold font-mono text-slate-900">{customFootfall} / d</div>
-            <div className="text-[10px] text-slate-500 mt-0.5">
-              Normal: 180 / d (+{((footfallRatio - 1) * 100).toFixed(0)}%)
+            {/* 3. Estimated Days Remaining & Stock-Out Date */}
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between">
+              <span className="text-[10px] font-bold uppercase text-slate-500">
+                3. Days Remaining &amp; Out Date
+              </span>
+              <div className="mt-1.5">
+                <div className={`text-xl font-bold font-mono ${
+                  activeDeterministicForecast.estimatedDaysRemaining !== null &&
+                  activeDeterministicForecast.estimatedDaysRemaining <= activeDeterministicForecast.leadTimeDays
+                    ? 'text-rose-700'
+                    : 'text-slate-900'
+                }`}>
+                  {activeDeterministicForecast.estimatedDaysRemaining !== null
+                    ? `${activeDeterministicForecast.estimatedDaysRemaining} Days`
+                    : 'Not calculable'}
+                </div>
+                <div className="text-[10px] text-slate-500 mt-0.5">
+                  Est. Out: <strong>{activeDeterministicForecast.estimatedStockoutDate ?? 'N/A'}</strong>
+                </div>
+              </div>
+              <div className="mt-2 pt-1.5 border-t border-slate-200/80 text-[10px] font-mono text-slate-700 font-bold">
+                With Pipeline (+{activeDeterministicForecast.pendingInwardStock}): {activeDeterministicForecast.estimatedDaysWithPipeline ?? 'N/A'}d
+              </div>
+            </div>
+
+            {/* 4. Lead Time & Safety Stock */}
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between">
+              <span className="text-[10px] font-bold uppercase text-slate-500">
+                4. Lead Time &amp; Safety Stock
+              </span>
+              <div className="mt-1.5">
+                <div className="text-xl font-bold font-mono text-indigo-700">
+                  {activeDeterministicForecast.leadTimeDays}d / {activeDeterministicForecast.safetyStock}
+                </div>
+                <div className="text-[10px] text-slate-500 mt-0.5">
+                  Lead-Time Demand: {activeDeterministicForecast.leadTimeDemand} {activeDeterministicForecast.unit}
+                </div>
+              </div>
+              <div className="mt-2 pt-1.5 border-t border-slate-200/80 text-[10px] font-mono text-indigo-900 font-bold">
+                Safety Buffer: {activeDeterministicForecast.safetyBufferDays}d ({activeDeterministicForecast.safetyStock} {activeDeterministicForecast.unit})
+              </div>
+            </div>
+
+            {/* 5. Reorder Point (ROP) */}
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between">
+              <span className="text-[10px] font-bold uppercase text-slate-500">
+                5. Reorder Point (ROP)
+              </span>
+              <div className="mt-1.5">
+                <div className="text-xl font-bold font-mono text-slate-900">
+                  {activeDeterministicForecast.reorderPoint} {activeDeterministicForecast.unit}
+                </div>
+                <div className="text-[10px] text-slate-500 mt-0.5">
+                  D_LT ({activeDeterministicForecast.leadTimeDemand}) + SS ({activeDeterministicForecast.safetyStock})
+                </div>
+              </div>
+              <div className="mt-2 pt-1.5 border-t border-slate-200/80 text-[10px] font-mono font-bold text-slate-700">
+                {activeDeterministicForecast.usableStock <= activeDeterministicForecast.reorderPoint
+                  ? '● Below ROP (Reorder Now)'
+                  : '● Above ROP Buffer'}
+              </div>
+            </div>
+
+            {/* 6. Suggested Replenishment Quantity */}
+            <div className="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200 flex flex-col justify-between">
+              <span className="text-[10px] font-bold uppercase text-emerald-900">
+                6. Suggested Replenishment
+              </span>
+              <div className="mt-1.5">
+                <div className="text-xl font-bold font-mono text-emerald-800">
+                  +{activeDeterministicForecast.suggestedReplenishmentQty} {activeDeterministicForecast.unit}
+                </div>
+                <div className="text-[10px] text-emerald-800 mt-0.5">
+                  Target ({activeDeterministicForecast.targetCycleDays}d): {activeDeterministicForecast.targetStockLevel} {activeDeterministicForecast.unit}
+                </div>
+              </div>
+              <div className="mt-2 pt-1.5 border-t border-emerald-200/80 text-[10px] font-mono text-emerald-900 font-bold">
+                Pack Multiple: {activeDeterministicForecast.packRoundingUnit} {activeDeterministicForecast.unit}
+              </div>
             </div>
           </div>
-          <div className="mt-2 pt-1.5 border-t border-slate-100 text-[10px] font-mono text-emerald-800 font-bold">
-            {(heatSyndromicShare * 100).toFixed(0)}% Fluid Loss
-          </div>
-        </div>
 
-        {/* Input 5: Current Physical Stock */}
-        <div className="bg-white rounded-xl border border-slate-200/90 p-3.5 shadow-xs flex flex-col justify-between">
-          <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center justify-between">
-            <span>5. Current Stock</span>
-            <Layers className="w-3.5 h-3.5 text-blue-600" />
-          </div>
-          <div className="mt-2">
-            <div className="text-xl font-bold font-mono text-rose-700">210 pkts</div>
-            <div className="text-[10px] text-slate-500 mt-0.5">ORS in pharmacy</div>
-          </div>
-          <div className="mt-2 pt-1.5 border-t border-slate-100 text-[10px] font-mono text-rose-900 font-bold">
-            Buffer: 250 pkts Min
-          </div>
-        </div>
+          {/* Short Explanation of Main Risk + Visible Formulas & Assumptions */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 text-xs">
+            <div className={`lg:col-span-5 p-4 rounded-xl border flex flex-col justify-between ${
+              activeDeterministicForecast.riskLevel === 'CRITICAL'
+                ? 'bg-rose-50/80 border-rose-200 text-rose-950'
+                : activeDeterministicForecast.riskLevel === 'WARNING'
+                ? 'bg-amber-50/80 border-amber-200 text-amber-950'
+                : 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
+            }`}>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-white/80 border border-current/20">
+                    Main Risk Explanation • {activeDeterministicForecast.riskLevel}
+                  </span>
+                  <span className="font-mono text-[11px] font-bold">
+                    Est. Out: {activeDeterministicForecast.estimatedStockoutDateFormatted}
+                  </span>
+                </div>
+                <p className="leading-relaxed font-medium text-xs">
+                  {activeDeterministicForecast.primaryRiskReason}
+                </p>
+                <div className="text-[11px] opacity-90 pt-1 border-t border-current/15 font-mono">
+                  Period Used: {activeDeterministicForecast.consumptionPeriodLabel}
+                </div>
+              </div>
 
-        {/* Input 6: Delivery Lead Time */}
-        <div className="bg-white rounded-xl border border-slate-200/90 p-3.5 shadow-xs flex flex-col justify-between">
-          <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center justify-between">
-            <span>6. Delivery Lead Time</span>
-            <Truck className="w-3.5 h-3.5 text-indigo-600" />
+              {activeDeterministicForecast.suggestedReplenishmentQty > 0 && (
+                <div className="pt-3 mt-3 border-t border-current/15 flex items-center justify-end">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const ok = await createOrder({
+                        medicineName: activeFormularyMed.name,
+                        quantityRequested: activeDeterministicForecast.suggestedReplenishmentQty,
+                        priority:
+                          activeDeterministicForecast.riskLevel === 'CRITICAL'
+                            ? 'EMERGENCY_REPLENISHMENT'
+                            : 'URGENT',
+                        justification: activeDeterministicForecast.primaryRiskReason
+                      });
+                      if (ok) {
+                        showNotification(
+                          `Replenishment order created: ${activeDeterministicForecast.suggestedReplenishmentQty} ${activeDeterministicForecast.unit} of ${activeFormularyMed.name} for ${selectedPHC.name}.`
+                        );
+                      }
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Truck className="w-3.5 h-3.5" />
+                    <span>Order Suggested {activeDeterministicForecast.suggestedReplenishmentQty} {activeDeterministicForecast.unit}</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="lg:col-span-7 p-4 rounded-xl border border-slate-200 bg-slate-50/80 space-y-2">
+              <div className="font-bold text-slate-900 text-xs flex items-center justify-between">
+                <span>Visible Deterministic Formulas &amp; Explicit Assumptions</span>
+                <span className="font-mono text-[10px] text-slate-500">Zero-Invention Arithmetic</span>
+              </div>
+              <div className="font-mono text-[11px] text-slate-700 space-y-1 bg-white p-2.5 rounded-lg border border-slate-200/80">
+                <div>1. {activeDeterministicForecast.formulas.usableStockFormula}</div>
+                <div>2. {activeDeterministicForecast.formulas.avgDailyConsumptionFormula}</div>
+                <div>3. {activeDeterministicForecast.formulas.daysRemainingFormula}</div>
+                <div>4. {activeDeterministicForecast.formulas.stockoutDateFormula}</div>
+                <div>5. {activeDeterministicForecast.formulas.safetyStockFormula}</div>
+                <div>6. {activeDeterministicForecast.formulas.reorderPointFormula}</div>
+                <div>7. {activeDeterministicForecast.formulas.suggestedReplenishmentFormula}</div>
+              </div>
+              <div className="text-[11px] text-slate-600 space-y-0.5 pt-1">
+                {activeDeterministicForecast.formulas.assumptions.map((a, idx) => (
+                  <div key={idx}>• {a}</div>
+                ))}
+              </div>
+            </div>
           </div>
-          <div className="mt-2">
-            <div className="text-xl font-bold font-mono text-indigo-700">{customLeadTime} Days</div>
-            <div className="text-[10px] text-slate-500 mt-0.5">Mandore Hub to Store</div>
-          </div>
-          <div className="mt-2 pt-1.5 border-t border-slate-100 text-[10px] font-mono text-indigo-900 font-bold">
-            RMSCL Truck Route
-          </div>
+
+          {/* What-If Supply Disruption Simulation (Strictly Read-Only) */}
+          {supplyDisruptionSimulation && (
+            <div className="mt-4 pt-4 border-t border-slate-200 space-y-4">
+              {/* Simulation Mode Header & Non-Mutation Guardrail Banner */}
+              <div className="bg-indigo-50/70 border border-indigo-200 rounded-xl p-3.5 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-2.5 py-0.5 rounded bg-indigo-900 text-white">
+                      WHAT-IF SIMULATION ONLY • READ-ONLY
+                    </span>
+                    <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-white text-indigo-900 border border-indigo-300">
+                      Zero Inventory / Order / Transfer Mutation
+                    </span>
+                  </div>
+                  <div className="text-xs font-bold text-slate-900">
+                    Hypothetical Warehouse Delivery Delay &amp; Nearby PHC Safe Surplus Transfer Simulator
+                  </div>
+                  <p className="text-[11px] text-slate-700 leading-relaxed">
+                    {supplyDisruptionSimulation.simulationNotice}
+                  </p>
+                </div>
+
+                {/* Hypothetical Warehouse Delivery Delay Selector */}
+                <div className="bg-white p-3 rounded-lg border border-indigo-200 shrink-0 space-y-1.5 min-w-[260px]">
+                  <div className="flex items-center justify-between text-xs">
+                    <label htmlFor="whatif-delay-range" className="font-bold text-slate-800">
+                      Hypothetical Delivery Delay:
+                    </label>
+                    <span className="font-mono font-bold text-rose-700">
+                      +{hypotheticalDelayDays.toFixed(1)} Days
+                    </span>
+                  </div>
+                  <input
+                    id="whatif-delay-range"
+                    type="range"
+                    min="0"
+                    max="10"
+                    step="0.5"
+                    value={hypotheticalDelayDays}
+                    onChange={(e) => setHypotheticalDelayDays(parseFloat(e.target.value))}
+                    className="w-full accent-indigo-600 cursor-pointer"
+                  />
+                  <div className="flex items-center justify-between gap-1 pt-0.5">
+                    {[0, 2, 3, 5, 7].map((d) => (
+                      <button
+                        key={d}
+                        type="button"
+                        onClick={() => setHypotheticalDelayDays(d)}
+                        className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border cursor-pointer transition-colors ${
+                          hypotheticalDelayDays === d
+                            ? 'bg-indigo-700 text-white border-indigo-700'
+                            : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                        }`}
+                      >
+                        +{d}d
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Current Scenario vs. Delayed-Delivery Scenario Comparison */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                {/* Current Scenario Card */}
+                <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-slate-200 text-slate-800">
+                      1. Current Scenario (No Delay)
+                    </span>
+                    <span className="font-mono text-[11px] font-bold text-slate-700">
+                      Lead Time: {supplyDisruptionSimulation.currentScenario.leadTimeDays} Days
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2.5 bg-white p-3 rounded-lg border border-slate-200/80">
+                    <div>
+                      <span className="text-[10px] text-slate-500 uppercase font-bold block">
+                        On-Hand Stock-Out Date
+                      </span>
+                      <span className="font-mono font-bold text-sm text-slate-900">
+                        {supplyDisruptionSimulation.currentScenario.onHandStockoutDate ?? 'Not calculable'}
+                      </span>
+                      <span className="text-[10px] text-slate-500 block">
+                        ({supplyDisruptionSimulation.currentScenario.onHandDaysRemaining ?? 'N/A'}d usable stock)
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-slate-500 uppercase font-bold block">
+                        Est. Stock-Out (With {supplyDisruptionSimulation.currentScenario.leadTimeDays}d Delivery)
+                      </span>
+                      <span className="font-mono font-bold text-sm text-emerald-800">
+                        {supplyDisruptionSimulation.currentScenario.effectiveStockoutDate ?? 'Not calculable'}
+                      </span>
+                      <span className="text-[10px] text-slate-600 block">
+                        Arrival: {supplyDisruptionSimulation.currentScenario.expectedDeliveryDate}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-[11px] text-slate-700 font-mono flex flex-wrap items-center justify-between gap-2 pt-1">
+                    <span>
+                      Current ROP: <strong>{supplyDisruptionSimulation.currentScenario.reorderPoint} {supplyDisruptionSimulation.unit}</strong>
+                    </span>
+                    <span>
+                      Unprotected Gap:{' '}
+                      <strong>
+                        {supplyDisruptionSimulation.currentScenario.unprotectedGapDaysBeforeDelivery}d
+                      </strong>
+                    </span>
+                  </div>
+                </div>
+
+                {/* Delayed-Delivery Scenario Card */}
+                <div
+                  className={`p-4 rounded-xl border space-y-2.5 ${
+                    supplyDisruptionSimulation.delayedScenario.stocksOutBeforeDeliveryArrives
+                      ? 'bg-rose-50/70 border-rose-200'
+                      : 'bg-amber-50/60 border-amber-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-rose-200/80 text-rose-950">
+                      2. Delayed-Delivery Scenario (+{supplyDisruptionSimulation.delayedScenario.delayDays}d Delay)
+                    </span>
+                    <span className="font-mono text-[11px] font-bold text-rose-900">
+                      Total Lead Time: {supplyDisruptionSimulation.delayedScenario.totalLeadTimeDays} Days
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2.5 bg-white p-3 rounded-lg border border-rose-200/80">
+                    <div>
+                      <span className="text-[10px] text-slate-500 uppercase font-bold block">
+                        Est. Stock-Out (Delayed Scenario)
+                      </span>
+                      <span className="font-mono font-bold text-sm text-rose-700">
+                        {supplyDisruptionSimulation.delayedScenario.effectiveStockoutDate ?? 'Not calculable'}
+                      </span>
+                      <span className="text-[10px] text-slate-600 block">
+                        Delayed Truck: {supplyDisruptionSimulation.delayedScenario.expectedDeliveryDate}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-slate-500 uppercase font-bold block">
+                        Unprotected Deficit Before Truck
+                      </span>
+                      <span className="font-mono font-bold text-sm text-rose-800">
+                        {supplyDisruptionSimulation.delayedScenario.unprotectedDeficitUnits}{' '}
+                        {supplyDisruptionSimulation.unit}
+                      </span>
+                      <span className="text-[10px] text-rose-700 font-bold block">
+                        Gap: {supplyDisruptionSimulation.delayedScenario.unprotectedGapDaysBeforeDelivery} days without stock
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-slate-800 leading-relaxed">
+                    {supplyDisruptionSimulation.delayedScenario.impactSummary}
+                  </p>
+                </div>
+              </div>
+
+              {/* Nearby PHC Surplus Eligibility & Safe Transfer Table */}
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3 text-xs">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <div className="font-bold text-slate-900 flex items-center gap-2">
+                      <ArrowRightLeft className="w-4 h-4 text-indigo-600" />
+                      <span>
+                        Nearby PHC Surplus Assessment &amp; Safe Transfer Quantity (Donor Protected ≥ Safety Stock)
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-600 mt-0.5">
+                      Evaluates peer PHCs for verified usable surplus of <strong>{supplyDisruptionSimulation.medicineName}</strong>. A donor is eligible only if its usable stock exceeds its own defined safety/reorder floor.
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveModule('orders')}
+                    className="px-3 py-1.5 rounded-lg bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 text-[11px] font-bold flex items-center gap-1.5 shrink-0 cursor-pointer"
+                    title="Navigate to the actual Orders & Inter-PHC Transfers workflow (does not mutate stock automatically)"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Open Actual Transfer Workflow</span>
+                  </button>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-[11px] bg-white rounded-lg border border-slate-200 overflow-hidden">
+                    <thead className="bg-slate-100 text-slate-700 uppercase font-mono text-[10px] border-b border-slate-200">
+                      <tr>
+                        <th className="px-3 py-2">Candidate Donor PHC</th>
+                        <th className="px-3 py-2 text-right">Usable Stock</th>
+                        <th className="px-3 py-2 text-right">Donor Safety / ROP Floor</th>
+                        <th className="px-3 py-2 text-right">Max Safe Surplus</th>
+                        <th className="px-3 py-2 text-right">Possible Transfer Qty</th>
+                        <th className="px-3 py-2 text-right">Donor Stock After</th>
+                        <th className="px-3 py-2">Eligibility &amp; Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {supplyDisruptionSimulation.donorAssessments.map((donor) => (
+                        <tr
+                          key={donor.phcId}
+                          className={donor.isEligible ? 'bg-emerald-50/30' : 'bg-white'}
+                        >
+                          <td className="px-3 py-2.5 font-bold text-slate-900">
+                            <div>{donor.phcName}</div>
+                            <div className="text-[10px] font-mono text-slate-500">
+                              ~{donor.distanceKm} km transit
+                            </div>
+                          </td>
+                          <td className="px-3 py-2.5 text-right font-mono font-bold text-slate-900">
+                            {donor.usableStock} {supplyDisruptionSimulation.unit}
+                          </td>
+                          <td className="px-3 py-2.5 text-right font-mono text-slate-700">
+                            {donor.definedSafetyStock} {supplyDisruptionSimulation.unit}
+                          </td>
+                          <td className="px-3 py-2.5 text-right font-mono font-bold text-indigo-700">
+                            {donor.maxSafeTransferQty} {supplyDisruptionSimulation.unit}
+                          </td>
+                          <td className="px-3 py-2.5 text-right font-mono font-bold">
+                            {donor.isEligible ? (
+                              <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-900 border border-emerald-300">
+                                {donor.possibleTransferQty} {supplyDisruptionSimulation.unit}
+                              </span>
+                            ) : (
+                              <span className="text-slate-400">0 {supplyDisruptionSimulation.unit}</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2.5 text-right font-mono text-slate-700">
+                            {donor.donorStockAfterTransfer} {supplyDisruptionSimulation.unit}
+                          </td>
+                          <td className="px-3 py-2.5 text-slate-700 leading-snug max-w-md">
+                            <span
+                              className={`inline-block font-mono text-[9px] font-bold uppercase px-1.5 py-0.5 rounded mr-1.5 ${
+                                donor.isEligible
+                                  ? 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                                  : 'bg-slate-200 text-slate-700'
+                              }`}
+                            >
+                              {donor.isEligible ? 'ELIGIBLE' : 'INELIGIBLE'}
+                            </span>
+                            <span>{donor.eligibilityExplanation}</span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Simulation Assumptions */}
+                <div className="text-[11px] text-slate-600 bg-white p-3 rounded-lg border border-slate-200/80 space-y-0.5">
+                  <div className="font-bold text-slate-800 mb-1">
+                    What-If Simulation Assumptions &amp; Non-Mutation Rules:
+                  </div>
+                  {supplyDisruptionSimulation.assumptions.map((assumption, idx) => (
+                    <div key={idx}>• {assumption}</div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
-      </div>
+      )}
 
       {/* 5. Predictive Consumption Trend & Stockout Trajectory */}
       <PredictiveConsumptionTrend
@@ -780,7 +1499,7 @@ export const HealthPreparedness: React.FC = () => {
         customHumidity={customHumidity}
         customFootfall={customFootfall}
         customLeadTime={customLeadTime}
-        selectedScenarioName={activeScenarioName}
+        selectedScenarioName={`${selectedPHC.district} • ${regionalProfile.seasonLabel} (${activeScenarioName})`}
         onExecuteEmergencyIndent={handleCreateEmergencyIndent}
         onApproveLateralTransfer={handleApproveLateralTransfer}
         onOpenReorderModal={handleOpenCustomReorderModal}
@@ -789,6 +1508,7 @@ export const HealthPreparedness: React.FC = () => {
         isExportingPdf={isExportingPdf}
         selectedMedicineId={selectedMedicineId}
         onSelectMedicine={setSelectedMedicineId}
+        thirtyDaySurgeCurve={regionalProfile.thirtyDaySurgeCurve}
       />
 
       {/* 6. Transparent Preparedness-Risk Calculation & Vulnerability Matrix */}
@@ -798,13 +1518,13 @@ export const HealthPreparedness: React.FC = () => {
           <div>
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-bold text-indigo-800 bg-indigo-100 px-2 py-0.5 rounded font-mono uppercase tracking-wider">
-                Transparent Risk Algorithmic Audit
+                {regionalProfile.zoneBadge} • {regionalProfile.seasonLabel}
               </span>
               <span className="text-xs text-slate-500 font-mono">Formula: Deficit Gap = Lead Time - (Stock / Surge Burn)</span>
             </div>
             <h2 className="text-base font-bold text-slate-900 mt-1 flex items-center gap-2">
               <Calculator className="w-4 h-4 text-indigo-600" />
-              <span>Preparedness Vulnerability Table & Reorder Requisitions</span>
+              <span>Preparedness Vulnerability Table &amp; Reorder Requisitions ({selectedPHC.name})</span>
             </h2>
           </div>
 
@@ -823,7 +1543,7 @@ export const HealthPreparedness: React.FC = () => {
               <span>Download PDF Audit</span>
             </button>
             <span className="text-xs text-slate-500 hidden sm:inline">
-              Correlated with <strong className="text-slate-800">RMSCL Mandore Hub</strong>
+              Correlated with <strong className="text-slate-800">{regionalProfile.warehouseHubName}</strong>
             </span>
           </div>
         </div>
@@ -975,7 +1695,7 @@ export const HealthPreparedness: React.FC = () => {
           <div className="flex items-center gap-2">
             <Info className="w-4 h-4 text-slate-400 shrink-0" />
             <span>
-              <strong>Transparent Formula:</strong> Projected Daily Burn = Historical Base × (1 + Env Weather Anomaly × Elasticity) × (Footfall Ratio). Stockout Gap = Mandore Lead Time ({customLeadTime}d) - (Stock / Projected Burn).
+              <strong>Transparent Formula:</strong> Projected Daily Burn = Historical Base × (1 + Regional Weather Anomaly × Drug Elasticity) × (Footfall Ratio). Stockout Gap = {regionalProfile.warehouseHubName} Lead Time ({customLeadTime}d) - (Stock / Projected Burn).
             </span>
           </div>
           <button
@@ -995,157 +1715,175 @@ export const HealthPreparedness: React.FC = () => {
           <div className="flex items-center justify-between border-b border-slate-100 pb-3">
             <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-amber-600" />
-              <span>Surveillance Reasoning & Logic Audits Behind Alerts</span>
+              <span>Surveillance Reasoning &amp; Logic Audits ({selectedPHC.district})</span>
             </h3>
             <span className="text-[10px] font-bold bg-amber-100 text-amber-900 px-2 py-0.5 rounded font-mono">
-              Syndromic Early Warning
+              {regionalProfile.seasonLabel}
             </span>
           </div>
 
           <div className="space-y-3 text-xs">
-            {/* Alert 1: ORS Stockout Risk */}
-            <div className="p-4 rounded-xl border border-rose-200 bg-rose-50/50 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-rose-950 flex items-center gap-1.5 text-xs">
-                  <AlertTriangle className="w-4 h-4 text-rose-600" />
-                  <span>Critical Alert: ORS Buffer Depletion Gap Before Delivery</span>
-                </span>
-                <span className="font-mono text-[10px] font-bold bg-rose-200 text-rose-900 px-2 py-0.5 rounded">
-                  Risk Score: 94/100
-                </span>
-              </div>
+            {/* Alert 1: Primary Vulnerable Medicine for this Geography & Season */}
+            {suppliesAnalysis[0] && (
+              <div className="p-4 rounded-xl border border-rose-200 bg-rose-50/50 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-rose-950 flex items-center gap-1.5 text-xs">
+                    <AlertTriangle className="w-4 h-4 text-rose-600" />
+                    <span>
+                      Priority Alert: {suppliesAnalysis[0].shortName} Buffer Depletion ({selectedPHC.name})
+                    </span>
+                  </span>
+                  <span className="font-mono text-[10px] font-bold bg-rose-200 text-rose-900 px-2 py-0.5 rounded">
+                    Risk Score: {suppliesAnalysis[0].riskScore}/100
+                  </span>
+                </div>
 
-              <div className="text-slate-700 leading-relaxed space-y-1">
-                <p>
-                  <strong>1. Observed Signal:</strong> IMD temperature of {customTemp}°C with {customHumidity}% humidity has triggered acute dehydration presentations across the OPD (surged to {customFootfall} patients/day).
-                </p>
-                <p>
-                  <strong>2. Syndromic Correlation (Non-Diagnostic):</strong> Clinical presentations reflect heat exhaustion and profuse fluid deficit rather than specific pathogen-based enteric infections. Demand elasticity for ORS surges to 2.3× baseline.
-                </p>
-                <p>
-                  <strong>3. Supply Bottleneck:</strong> Current physical reserve of 210 sachets at {suppliesAnalysis[0].projectedDailyBurn} pkts/day depletion will exhaust in <strong>1.8 days</strong>. With RMSCL Mandore delivery lead time of <strong>{customLeadTime} days</strong>, a <strong>1.7-day stockout gap</strong> will occur unless emergency supply is enacted.
-                </p>
-                <p className="text-rose-900 font-bold pt-1 border-t border-rose-200/80">
-                  Administrative Directive: Expedite pending shipment #ORD-2026-904 and approve lateral transfer of 600 sachets from PHC Mandore.
-                </p>
-              </div>
+                <div className="text-slate-700 leading-relaxed space-y-1">
+                  <p>
+                    <strong>1. Observed Geographical Signal:</strong> In <strong>{selectedPHC.district} ({regionalProfile.zoneBadge})</strong>, {customTemp}°C ambient temperature and {customHumidity}% relative humidity during <strong>{regionalProfile.seasonLabel}</strong> have driven OPD footfall to {customFootfall} patients/day.
+                  </p>
+                  <p>
+                    <strong>2. Syndromic Correlation (Non-Diagnostic):</strong> {suppliesAnalysis[0].clinicalDriverNote}
+                  </p>
+                  <p>
+                    <strong>3. Supply Bottleneck:</strong> Current usable stock of <strong>{suppliesAnalysis[0].currentStock} {suppliesAnalysis[0].unit}</strong> at <strong>{suppliesAnalysis[0].projectedDailyBurn} {suppliesAnalysis[0].unit}/day</strong> projected surge depletion covers <strong>{suppliesAnalysis[0].daysOfSafeStock} days</strong> against a <strong>{customLeadTime}-day</strong> transit window from {regionalProfile.warehouseHubName}.
+                  </p>
+                  <p className="text-rose-900 font-bold pt-1 border-t border-rose-200/80">
+                    Administrative Directive: Dispatch emergency indent of +{suppliesAnalysis[0].recommendedReorder} {suppliesAnalysis[0].unit} to {regionalProfile.warehouseHubName}.
+                  </p>
+                </div>
 
-              <div className="flex flex-wrap items-center gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setWhyAlertModalData({
-                      title: 'Potential Stock-Out Risk: ORS Sachets within 3.6 Days',
-                      medicineName: 'Oral Rehydration Salts (ORS) Sachets 20.5g',
-                      currentStock: 210,
-                      unit: 'units',
-                      avgDailyConsumption: 58,
-                      recentTrendPercent: 21,
-                      forecastDemand: 67,
-                      nextReplenishmentDays: 3.9,
-                      safetyBufferDays: 1.5,
-                      projectedRisk: 'HIGH',
-                      reason:
-                        'Current projected consumption exceeds available stock before expected replenishment.',
-                      onRemediate: () => handleCreateEmergencyIndent(suppliesAnalysis[0]),
-                      onLateralTransfer: () => handleApproveLateralTransfer('REDIST-2026-01', 'ORS Sachets')
-                    });
-                    setIsWhyModalOpen(true);
-                  }}
-                  className="px-3 py-1.5 bg-rose-100 hover:bg-rose-200 text-rose-900 border border-rose-300 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-                  title="Inspect algorithmic breakdown"
-                >
-                  <HelpCircle className="w-3.5 h-3.5 text-rose-600" />
-                  <span>Why this alert?</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleCreateEmergencyIndent(suppliesAnalysis[0])}
-                  className="px-3 py-1.5 bg-rose-700 hover:bg-rose-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
-                >
-                  <Truck className="w-3.5 h-3.5" />
-                  <span>Execute Emergency RMSCL Indent</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveModule('orders')}
-                  className="px-3 py-1.5 bg-white border border-rose-300 text-rose-900 hover:bg-rose-100 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  <span>Inspect in Orders & Logistics</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setWhyAlertModalData({
+                        title: `Potential Stock-Out Risk: ${suppliesAnalysis[0].shortName} within ${suppliesAnalysis[0].daysOfSafeStock} Days`,
+                        medicineName: suppliesAnalysis[0].name,
+                        currentStock: suppliesAnalysis[0].currentStock,
+                        unit: suppliesAnalysis[0].unit,
+                        avgDailyConsumption: suppliesAnalysis[0].historicalBaseBurn,
+                        recentTrendPercent: Math.round(
+                          ((suppliesAnalysis[0].projectedDailyBurn - suppliesAnalysis[0].historicalBaseBurn) /
+                            Math.max(1, suppliesAnalysis[0].historicalBaseBurn)) *
+                            100
+                        ),
+                        forecastDemand: suppliesAnalysis[0].projectedDailyBurn,
+                        nextReplenishmentDays: customLeadTime,
+                        safetyBufferDays: 2.0,
+                        projectedRisk: suppliesAnalysis[0].urgency === 'NORMAL' ? 'MODERATE' : 'HIGH',
+                        reason: `${regionalProfile.seasonLabel} in ${selectedPHC.district} (${regionalProfile.zoneName}): ${suppliesAnalysis[0].clinicalDriverNote}`,
+                        onRemediate: () => handleCreateEmergencyIndent(suppliesAnalysis[0]),
+                        onLateralTransfer: suppliesAnalysis[0].linkedRedistId
+                          ? () =>
+                              handleApproveLateralTransfer(
+                                suppliesAnalysis[0].linkedRedistId!,
+                                suppliesAnalysis[0].shortName
+                              )
+                          : undefined
+                      });
+                      setIsWhyModalOpen(true);
+                    }}
+                    className="px-3 py-1.5 bg-rose-100 hover:bg-rose-200 text-rose-900 border border-rose-300 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                    title="Inspect algorithmic breakdown"
+                  >
+                    <HelpCircle className="w-3.5 h-3.5 text-rose-600" />
+                    <span>Why this alert?</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleCreateEmergencyIndent(suppliesAnalysis[0])}
+                    className="px-3 py-1.5 bg-rose-700 hover:bg-rose-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
+                  >
+                    <Truck className="w-3.5 h-3.5" />
+                    <span>Execute Emergency Indent (+{suppliesAnalysis[0].recommendedReorder})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveModule('orders')}
+                    className="px-3 py-1.5 bg-white border border-rose-300 text-rose-900 hover:bg-rose-100 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Inspect in Orders &amp; Logistics</span>
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
 
-            {/* Alert 2: Intravenous Fluid Stockout Vulnerability */}
-            <div className="p-4 rounded-xl border border-amber-200 bg-amber-50/50 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-amber-950 flex items-center gap-1.5 text-xs">
-                  <ShieldAlert className="w-4 h-4 text-amber-600" />
-                  <span>High Alert: Intravenous Fluid Buffer Depletion (Normal Saline & RL)</span>
-                </span>
-                <span className="font-mono text-[10px] font-bold bg-amber-200 text-amber-900 px-2 py-0.5 rounded">
-                  Risk Score: 86/100
-                </span>
-              </div>
+            {/* Alert 2: Secondary Vulnerable Medicine for this Geography & Season */}
+            {suppliesAnalysis[1] && (
+              <div className="p-4 rounded-xl border border-amber-200 bg-amber-50/50 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-amber-950 flex items-center gap-1.5 text-xs">
+                    <ShieldAlert className="w-4 h-4 text-amber-600" />
+                    <span>Secondary Alert: {suppliesAnalysis[1].shortName} Surge Pressure</span>
+                  </span>
+                  <span className="font-mono text-[10px] font-bold bg-amber-200 text-amber-900 px-2 py-0.5 rounded">
+                    Risk Score: {suppliesAnalysis[1].riskScore}/100
+                  </span>
+                </div>
 
-              <div className="text-slate-700 leading-relaxed space-y-1">
-                <p>
-                  <strong>1. Observed Signal:</strong> Inpatient heat-collapse admissions and severe pediatric dehydration cases requiring IV resuscitation have risen from 2 cases/day to 9 cases/day.
-                </p>
-                <p>
-                  <strong>2. Syndromic Correlation:</strong> Patients exhibiting hypotension, electrolyte collapse, and hyperthermia require immediate isotonic saline resuscitation.
-                </p>
-                <p>
-                  <strong>3. Supply Bottleneck:</strong> Normal Saline inventory stands at 64 bottles against a projected burn of 19 bottles/day. Safe stock covers 3.4 days, creating zero contingency buffer against potential road transit delays.
-                </p>
-              </div>
+                <div className="text-slate-700 leading-relaxed space-y-1">
+                  <p>
+                    <strong>1. Observed Signal:</strong> Co-occurring syndromic presentations in <strong>{selectedPHC.district}</strong> during {regionalProfile.seasonLabel} have accelerated daily consumption of {suppliesAnalysis[1].shortName} from {suppliesAnalysis[1].historicalBaseBurn} to {suppliesAnalysis[1].projectedDailyBurn} {suppliesAnalysis[1].unit}/day.
+                  </p>
+                  <p>
+                    <strong>2. Syndromic Correlation:</strong> {suppliesAnalysis[1].clinicalDriverNote}
+                  </p>
+                  <p>
+                    <strong>3. Supply Bottleneck:</strong> Inventory stands at <strong>{suppliesAnalysis[1].currentStock} {suppliesAnalysis[1].unit}</strong> against a projected burn of <strong>{suppliesAnalysis[1].projectedDailyBurn} {suppliesAnalysis[1].unit}/day</strong> ({suppliesAnalysis[1].daysOfSafeStock} days cover vs {customLeadTime}d transit lead time).
+                  </p>
+                </div>
 
-              <div className="flex flex-wrap items-center gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setWhyAlertModalData({
-                      title: 'High Alert: Intravenous Fluid Buffer Depletion',
-                      medicineName: 'Normal Saline (0.9% NaCl) IV Infusion 500ml',
-                      currentStock: 64,
-                      unit: 'bottles',
-                      avgDailyConsumption: 6,
-                      recentTrendPercent: 28,
-                      forecastDemand: 19,
-                      nextReplenishmentDays: customLeadTime,
-                      safetyBufferDays: 2.0,
-                      projectedRisk: 'HIGH',
-                      reason:
-                        'Current projected consumption exceeds available stock before expected replenishment.',
-                      onRemediate: () => handleCreateEmergencyIndent(suppliesAnalysis[1])
-                    });
-                    setIsWhyModalOpen(true);
-                  }}
-                  className="px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-                  title="Inspect algorithmic breakdown"
-                >
-                  <HelpCircle className="w-3.5 h-3.5 text-amber-700" />
-                  <span>Why this alert?</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleCreateEmergencyIndent(suppliesAnalysis[1])}
-                  className="px-3 py-1.5 bg-amber-700 hover:bg-amber-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
-                >
-                  <Truck className="w-3.5 h-3.5" />
-                  <span>Draft Normal Saline Indent (200 bottles)</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveModule('medicine')}
-                  className="px-3 py-1.5 bg-white border border-amber-300 text-amber-900 hover:bg-amber-100 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <Pill className="w-3.5 h-3.5" />
-                  <span>Check Batch Shelf-Life</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setWhyAlertModalData({
+                        title: `High Alert: ${suppliesAnalysis[1].shortName} Buffer Depletion`,
+                        medicineName: suppliesAnalysis[1].name,
+                        currentStock: suppliesAnalysis[1].currentStock,
+                        unit: suppliesAnalysis[1].unit,
+                        avgDailyConsumption: suppliesAnalysis[1].historicalBaseBurn,
+                        recentTrendPercent: Math.round(
+                          ((suppliesAnalysis[1].projectedDailyBurn - suppliesAnalysis[1].historicalBaseBurn) /
+                            Math.max(1, suppliesAnalysis[1].historicalBaseBurn)) *
+                            100
+                        ),
+                        forecastDemand: suppliesAnalysis[1].projectedDailyBurn,
+                        nextReplenishmentDays: customLeadTime,
+                        safetyBufferDays: 2.0,
+                        projectedRisk: 'HIGH',
+                        reason: `${regionalProfile.seasonLabel} (${selectedPHC.district}): ${suppliesAnalysis[1].clinicalDriverNote}`,
+                        onRemediate: () => handleCreateEmergencyIndent(suppliesAnalysis[1])
+                      });
+                      setIsWhyModalOpen(true);
+                    }}
+                    className="px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                    title="Inspect algorithmic breakdown"
+                  >
+                    <HelpCircle className="w-3.5 h-3.5 text-amber-700" />
+                    <span>Why this alert?</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleCreateEmergencyIndent(suppliesAnalysis[1])}
+                    className="px-3 py-1.5 bg-amber-700 hover:bg-amber-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
+                  >
+                    <Truck className="w-3.5 h-3.5" />
+                    <span>Draft {suppliesAnalysis[1].shortName} Indent (+{suppliesAnalysis[1].recommendedReorder})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveModule('medicine')}
+                    className="px-3 py-1.5 bg-white border border-amber-300 text-amber-900 hover:bg-amber-100 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <Pill className="w-3.5 h-3.5" />
+                    <span>Check Batch Shelf-Life</span>
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
 
@@ -1155,15 +1893,15 @@ export const HealthPreparedness: React.FC = () => {
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
                 <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                <span>Facility Action Readiness Checklist (NDMA & DHS Rajasthan)</span>
+                <span>Facility Action Readiness Checklist ({selectedPHC.district} • {regionalProfile.seasonLabel})</span>
               </h3>
               <span className="text-xs font-mono font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg">
-                {completedActions.length}/{weather.recommendedPreparatoryActions.length} Completed
+                {completedActions.length}/{regionalProfile.recommendedActions.length} Completed
               </span>
             </div>
 
             <div className="mt-4 space-y-2.5">
-              {weather.recommendedPreparatoryActions.map((action, idx) => {
+              {regionalProfile.recommendedActions.map((action, idx) => {
                 const isChecked = completedActions.includes(action.action);
                 return (
                   <div
@@ -1200,22 +1938,24 @@ export const HealthPreparedness: React.FC = () => {
           </div>
 
           <div className="pt-3 border-t border-slate-100 text-xs text-slate-500 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
-            <span>Protocol: National Action Plan on Heat-Related Illnesses (NAP-HRI)</span>
-            <span className="font-mono text-emerald-700 font-bold">100% Cold Chain Compliant</span>
+            <span>Protocol: IDSP &amp; DHS {selectedPHC.state} ({regionalProfile.zoneBadge})</span>
+            <span className="font-mono text-emerald-700 font-bold">100% Cold Chain &amp; Buffer Audited</span>
           </div>
         </div>
       </div>
 
-      {/* 8. Recharts Visual Comparison: Baseline vs Current vs Heatwave Surge Burn */}
+      {/* 8. Recharts Visual Comparison: Baseline vs Current vs Regional Seasonal Surge Burn */}
       <div className="bg-white rounded-xl border border-slate-200/90 p-5 sm:p-6 shadow-xs space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <div>
             <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
               <BarChart3 className="w-4 h-4 text-emerald-600" />
-              <span>Comparative Burn Rate Acceleration Under Heatwave Surge</span>
+              <span>
+                Comparative Burn Rate Acceleration — {selectedPHC.name} ({regionalProfile.seasonLabel})
+              </span>
             </h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              Contrasting Historical Baseline (normal day) against Current Logged Burn and Projected Heatwave Burn.
+              Contrasting Historical Baseline against Current Logged Burn and Projected {regionalProfile.seasonLabel} Surge Burn in {selectedPHC.district}.
             </p>
           </div>
           <span className="text-[10px] font-mono font-bold bg-slate-100 text-slate-700 px-2 py-0.5 rounded">
@@ -1240,7 +1980,7 @@ export const HealthPreparedness: React.FC = () => {
               <Legend wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }} />
               <Bar dataKey="historical" name="Historical Baseline" fill="#94a3b8" radius={[4, 4, 0, 0]} />
               <Bar dataKey="current" name="Current Recorded Burn" fill="#0284c7" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="projected" name="Projected Heatwave Surge Burn" fill="#dc2626" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="projected" name={`Projected ${regionalProfile.seasonLabel} Burn`} fill="#dc2626" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>

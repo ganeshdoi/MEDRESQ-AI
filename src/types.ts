@@ -20,6 +20,13 @@ export interface PHCFacility {
   populationServed: number;
 }
 
+export interface MedicineBatch {
+  batchNumber: string;
+  quantity: number;
+  expiryDate: string; // YYYY-MM-DD
+  status?: 'ACTIVE' | 'EXPIRING_SOON' | 'EXPIRED';
+}
+
 export interface MedicineItem {
   id: string;
   phcId: string;
@@ -27,16 +34,21 @@ export interface MedicineItem {
   category: 'Essential ORS/Fluids' | 'Analgesics' | 'Antibiotics' | 'Maternal & Child' | 'Vaccines & Antidotes' | 'Chronic Care';
   unit: string;
   currentStock: number;
+  stock?: number;
   dailyConsumption: number;
   weeklyConsumption: number;
   minStockLevel: number;
+  minThreshold?: number;
   maxStockLevel: number;
+  maxThreshold?: number;
   batchNumber: string;
   expiryDate: string; // YYYY-MM-DD
+  batches?: MedicineBatch[];
   pendingOrders: number;
+  reservedStock?: number;
   expectedDeliveryDate?: string;
   sourceWarehouse: string;
-  // AI calculated fields
+  // Deterministic forecast fields
   projectedStockoutDays: number;
   stockoutRisk: 'CRITICAL' | 'WARNING' | 'NORMAL' | 'SURPLUS';
   predictedSurplus: number;
@@ -57,15 +69,50 @@ export interface ExtractedOCRRecord {
   confidenceScore: number;
 }
 
+export type VoiceTransactionType =
+  | 'Consumption'
+  | 'Receipt'
+  | 'Emergency Dispense'
+  | 'Check Stock'
+  | 'Replenishment Order'
+  | 'Report Shortage'
+  | 'Register Entry'
+  | 'Add PHC Data';
+
 export interface VoiceEntryResult {
   rawTranscript: string;
   languageDetected: string;
+  englishTranslation?: string;
+  hindiTranslation?: string;
+  nativeScriptSummary?: string;
+  wardDepartment?: string;
+  engineUsed?: string;
+  sttEngine?: string;
+  commandIntent?: string;
   parsedMedicine: string;
-  parsedTransaction: 'Consumption' | 'Receipt' | 'Emergency Dispense';
+  parsedTransaction: VoiceTransactionType;
   parsedQuantity: number;
+  parsedBatch?: string;
   parsedDate: string;
+  parsedOpdFootfall?: number;
+  parsedOccupiedBeds?: number;
+  parsedEmergencyCases?: number;
   confidence: number;
   notes?: string;
+}
+
+export interface RecentVoiceCommand {
+  id: string;
+  transcript: string;
+  language: string;
+  languageLabel: string;
+  parsedMedicine: string;
+  parsedQuantity: number;
+  parsedTransaction: VoiceTransactionType;
+  englishTranslation?: string;
+  engineUsed?: string;
+  executedAt: string;
+  committedToLedger?: boolean;
 }
 
 export interface CapacityRecord {
@@ -163,6 +210,8 @@ export interface WeatherPreparedness {
 }
 
 export type OrderStatus =
+  | 'DRAFT'
+  | 'SUBMITTED'
   | 'REQUESTED'
   | 'APPROVAL PENDING'
   | 'APPROVED'
@@ -170,12 +219,52 @@ export type OrderStatus =
   | 'DISPATCHED'
   | 'IN TRANSIT'
   | 'DELIVERED'
-  | 'RECEIVED';
+  | 'RECEIVED'
+  | 'CANCELLED';
+
+export type RedistributionStatus =
+  | 'PENDING_REVIEW'
+  | 'PROPOSED'
+  | 'APPROVED'
+  | 'DISPATCHED'
+  | 'IN_TRANSIT'
+  | 'RECEIVED'
+  | 'COMPLETED'
+  | 'REJECTED'
+  | 'CANCELLED';
+
+export interface StatusTransitionRecord {
+  transactionId: string;
+  previousStatus: string;
+  newStatus: string;
+  timestamp: string;
+  actor?: string;
+  note?: string;
+}
+
+export interface SupplyChainAuditEntry {
+  transactionId: string;
+  entityId: string;
+  entityType: 'WAREHOUSE_INDENT' | 'INTER_PHC_TRANSFER' | 'INVENTORY_DISPENSE' | 'OCR_VERIFY';
+  medicineName: string;
+  medicineId?: string;
+  quantity: number;
+  unit: string;
+  source: string;
+  destination: string;
+  timestamp: string;
+  previousStatus: string;
+  newStatus: string;
+  stockImpactSummary?: string;
+  isHistoricalDemo?: boolean;
+  notes?: string;
+}
 
 export interface LogisticsOrder {
   id: string;
   phcId: string;
   phcName: string;
+  medicineId?: string;
   medicineName: string;
   quantityRequested: number;
   quantityDispatched?: number;
@@ -183,13 +272,21 @@ export interface LogisticsOrder {
   destination: string;
   status: OrderStatus;
   requestDate: string;
+  submittedDate?: string;
   approvalDate?: string;
   dispatchDate?: string;
+  inTransitDate?: string;
   estimatedDelivery: string;
   actualDeliveryDate?: string;
+  cancelledDate?: string;
+  cancelReason?: string;
   consignmentId?: string;
   priority: 'ROUTINE' | 'URGENT' | 'EMERGENCY_REPLENISHMENT';
   notes?: string;
+  isHistoricalDemo?: boolean;
+  stockCredited?: boolean;
+  pipelineTracked?: boolean;
+  statusHistory?: StatusTransitionRecord[];
 }
 
 export interface RedistributionOpportunity {
@@ -204,6 +301,9 @@ export interface RedistributionOpportunity {
     id: string;
     name: string;
     currentStock: number;
+    usableStock?: number;
+    reservedStock?: number;
+    minStockLevel?: number;
     projectedDemand: number;
     potentialSurplus: number;
   };
@@ -211,6 +311,7 @@ export interface RedistributionOpportunity {
     id: string;
     name: string;
     currentStock: number;
+    usableStock?: number;
     projectedDemand: number;
     projectedShortage: number;
     urgencyLevel: 'HIGH' | 'CRITICAL' | 'MODERATE';
@@ -218,7 +319,23 @@ export interface RedistributionOpportunity {
   recommendedTransferQuantity: number;
   transitDistanceKm: number;
   estimatedTransitTimeHours: number;
-  status: 'PENDING_REVIEW' | 'PROPOSED' | 'APPROVED' | 'IN_TRANSIT' | 'COMPLETED';
+  status: RedistributionStatus;
+  donorReserved?: boolean;
+  reservedQuantity?: number;
+  donorDeducted?: boolean;
+  receiverCredited?: boolean;
+  sourceMedicineId?: string;
+  targetMedicineId?: string;
+  createdDate?: string;
+  approvedAt?: string;
+  dispatchedAt?: string;
+  completedAt?: string;
+  receivedAt?: string;
+  rejectedAt?: string;
+  cancelledAt?: string;
+  statusReason?: string;
+  isHistoricalDemo?: boolean;
+  statusHistory?: StatusTransitionRecord[];
 }
 
 export interface OperationalAlert {
@@ -237,6 +354,27 @@ export interface OperationalAlert {
   supportingData?: string;
   suggestedAction?: string;
   status: 'ACTIVE' | 'ACKNOWLEDGED' | 'RESOLVED';
+  medicineId?: string;
+  currentStock?: number;
+  thresholdLevel?: number;
+  unit?: string;
+}
+
+export interface ProactiveStockAlert {
+  id: string;
+  phcId: string;
+  phcName: string;
+  medicineId: string;
+  medicineName: string;
+  category: string;
+  currentStock: number;
+  thresholdLevel: number;
+  unit: string;
+  projectedStockoutDays: number;
+  severity: 'CRITICAL' | 'WARNING';
+  timestamp: string;
+  read: boolean;
+  autoIndentTriggered?: boolean;
 }
 
 export interface NetworkFacility {
@@ -255,12 +393,40 @@ export interface NetworkFacility {
   occupiedBeds: number;
   capacityUtilization: number; // percentage
   operationalRisk: 'LOW' | 'MODERATE' | 'HIGH' | 'CRITICAL';
-  medicineRisk: 'ADEQUATE' | 'BUFFER_DEPLETING' | 'CRITICAL_DEFICIT' | 'SURPLUS_AVAILABLE';
+  medicineRisk: 'ADEQUATE' | 'BUFFER_DEPLETING' | 'CRITICAL_DEFICIT' | 'SURPLUS_AVAILABLE' | 'UNKNOWN';
   workforceStatus: 'OPTIMAL' | 'MODERATE' | 'SHORTAGE';
   preparednessStatus: 'PREPARED' | 'ALERTED' | 'ACTION_REQUIRED';
   staffPresentCount: number;
   staffSanctionedCount: number;
   coldChainTempC?: number;
+  isInventoryMatched?: boolean;
+  isSimulatedData?: boolean;
+  dataSourceLabel?: string;
+  assessedMedicineName?: string;
+  assessedRiskCategory?: 'CRITICAL' | 'WARNING' | 'NORMAL' | 'SURPLUS' | 'UNKNOWN';
+  assessedUsableStock?: number | null;
+  assessedUnit?: string;
+  assessedMinThreshold?: number | null;
+  assessedMaxThreshold?: number | null;
+  assessedDaysRemaining?: number | null;
+  statusReason?: string;
+  assessedMedicine?: {
+    medicineId: string | null;
+    medicineName: string;
+    unit: string;
+    usableStock: number | null;
+    expiredBatchStock: number | null;
+    dailyConsumption: number | null;
+    daysRemaining: number | null;
+    minThreshold: number | null;
+    maxThreshold?: number | null;
+    safetyStock: number | null;
+    reorderPoint: number | null;
+    surplusTransferableQty: number | null;
+    deficitQty: number | null;
+    riskCategory: 'CRITICAL' | 'WARNING' | 'NORMAL' | 'SURPLUS' | 'UNKNOWN';
+    statusReason: string;
+  };
   keyShortages: {
     medicineName: string;
     currentStock: number;
@@ -309,7 +475,7 @@ export interface RedistributionLink {
   unit: string;
   distanceKm: number;
   estimatedTransitHours: number;
-  status: 'PROPOSED' | 'PENDING_REVIEW' | 'APPROVED' | 'IN_TRANSIT';
+  status: RedistributionStatus;
   urgency: 'HIGH' | 'CRITICAL' | 'MODERATE';
 }
 
@@ -328,7 +494,7 @@ export interface IntegrationConnector {
   id: string;
   name: string;
   acronym: string;
-  category: 'Supply Chain' | 'Health Registry' | 'Weather & Environmental' | 'Logistics & GIS' | 'Digital Health Mission';
+  category: 'Supply Chain' | 'Health Registry' | 'Weather & Environmental' | 'Logistics & GIS' | 'Digital Health Mission' | 'AI & Multilingual Speech';
   description: string;
   status: 'CONNECTED' | 'NOT CONNECTED' | 'CONFIGURE';
   lastSync?: string;
@@ -352,3 +518,112 @@ export interface SurplusCandidate {
   authorizedMOIC: string;
   contactNumber: string;
 }
+
+export interface GoogleMapsPlace {
+  title: string;
+  uri: string;
+  address?: string;
+  snippet?: string;
+}
+
+export interface AIChatMessage {
+  id: string;
+  userId?: string;
+  role: 'user' | 'model';
+  content: string;
+  modelUsed?: string;
+  persona?: string;
+  timestamp: string;
+}
+
+export interface OfflineQueueItem {
+  id: string;
+  module: 'voice' | 'medicine' | 'orders' | 'records' | 'alerts' | 'redistribution';
+  moduleLabel: string;
+  action: string;
+  entityName: string;
+  quantity?: number;
+  unit?: string;
+  facilityId: string;
+  facilityName: string;
+  timestamp: string;
+  formattedTime: string;
+  status: 'PENDING_SYNC' | 'SYNCING' | 'SYNCED' | 'FAILED_RETRY';
+  retryCount: number;
+  payload: Record<string, any>;
+  byteSize: number;
+  errorMessage?: string;
+}
+
+export type RoutingOperationMode = 'DIRECT' | 'SUPPLY_CIRCUIT' | 'PERSONNEL_DEPLOYMENT' | 'CLUSTER_MESH';
+
+export interface EmergencyRouteStop {
+  facility: NetworkFacility;
+  stopIndex: number;
+  isOrigin?: boolean;
+  isDestination?: boolean;
+  suppliesToDeliver?: Array<{
+    item: string;
+    quantity: number;
+    unit: string;
+  }>;
+  personnelToDeploy?: Array<{
+    role: string;
+    count: number;
+  }>;
+  legDistanceText?: string;
+  legDurationText?: string;
+}
+
+export interface EmergencyCircuitPlan {
+  id: string;
+  title: string;
+  description: string;
+  category: 'SUPPLY_DISTRIBUTION' | 'PERSONNEL_DEPLOYMENT';
+  originId: string;
+  destinationId: string;
+  waypointIds: string[];
+  vehicle: {
+    regNumber: string;
+    model: string;
+    driverName: string;
+    driverPhone: string;
+  };
+  teamLeader: {
+    name: string;
+    role: string;
+    phone: string;
+  };
+  suppliesAllocations?: Record<string, Array<{ item: string; quantity: number; unit: string }>>;
+  personnelAllocations?: Record<string, Array<{ role: string; count: number }>>;
+}
+
+export interface InterPHCCorridor {
+  id: string;
+  facilityAId: string;
+  facilityBId: string;
+  roadDistanceKm: number;
+  travelTimeMins: number;
+  highwayType: string;
+  emergencyStatus: 'CLEAR' | 'CAUTION_HEATWAVE' | 'ROUGH_TERRAIN';
+}
+
+export interface DistanceMatrixTransportEstimate {
+  originFacilityId: string;
+  originFacilityName: string;
+  surplusFacilityId: string;
+  surplusFacility: NetworkFacility;
+  medicineName?: string;
+  surplusQuantity?: number;
+  unit?: string;
+  distanceKm: number;
+  distanceText: string;
+  durationMinutes: number;
+  durationText: string;
+  durationInTrafficText?: string;
+  status: 'OK' | 'ZERO_RESULTS' | 'NOT_FOUND' | 'ERROR';
+  isRealtimeGoogleDistanceMatrix: boolean;
+  transportMode: '108 Ambulance (Cold-Chain)' | 'RMSCL Heavy Reefer' | 'Block Mobile Courier' | 'Rapid Two-Wheeler';
+  emergencyPriority: 'CRITICAL_URGENT' | 'HIGH' | 'ROUTINE';
+}
+

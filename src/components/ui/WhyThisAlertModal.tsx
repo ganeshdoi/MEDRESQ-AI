@@ -74,13 +74,20 @@ export const WhyThisAlertModal: React.FC<WhyThisAlertModalProps> = ({
     onLateralTransfer
   } = breakdown;
 
-  // Mathematical derivations
-  const runwayDays = forecastDemand > 0 ? parseFloat((currentStock / forecastDemand).toFixed(1)) : 99;
-  const stockoutGapDays = parseFloat((nextReplenishmentDays - runwayDays).toFixed(1));
-  const stockoutHours = Math.round(Math.max(0, stockoutGapDays) * 24);
-  const totalRequiredRunway = parseFloat((nextReplenishmentDays + safetyBufferDays).toFixed(1));
-  const bufferDeficitDays = parseFloat((totalRequiredRunway - runwayDays).toFixed(1));
-  const deficitUnits = Math.round(Math.max(0, totalRequiredRunway * forecastDemand - currentStock));
+  // Safe mathematical derivations
+  const safeStock = Number.isFinite(currentStock) && currentStock >= 0 ? currentStock : 0;
+  const safeAvgDaily = Number.isFinite(avgDailyConsumption) && avgDailyConsumption >= 0 ? avgDailyConsumption : 0;
+  const safeForecastDemand = Number.isFinite(forecastDemand) && forecastDemand > 0 ? forecastDemand : safeAvgDaily;
+  const safeLeadTime = Number.isFinite(nextReplenishmentDays) && nextReplenishmentDays > 0 ? nextReplenishmentDays : 3.5;
+  const safeBuffer = Number.isFinite(safetyBufferDays) && safetyBufferDays >= 0 ? safetyBufferDays : 3.0;
+
+  const runwayDays = safeForecastDemand > 0 ? parseFloat((safeStock / safeForecastDemand).toFixed(1)) : null;
+  const rawGapDays = runwayDays !== null ? parseFloat((safeLeadTime - runwayDays).toFixed(1)) : 0;
+  const stockoutGapDays = Math.max(0, rawGapDays);
+  const stockoutHours = Math.round(stockoutGapDays * 24);
+  const totalRequiredRunway = parseFloat((safeLeadTime + safeBuffer).toFixed(1));
+  const bufferDeficitDays = runwayDays !== null ? Math.max(0, parseFloat((totalRequiredRunway - runwayDays).toFixed(1))) : 0;
+  const deficitUnits = Math.round(Math.max(0, totalRequiredRunway * safeForecastDemand - safeStock));
 
   // Risk styling
   const isHighOrCritical = projectedRisk === 'HIGH' || projectedRisk === 'CRITICAL';
@@ -241,35 +248,46 @@ export const WhyThisAlertModal: React.FC<WhyThisAlertModalProps> = ({
                 {/* Available runway */}
                 <div
                   className="h-full bg-rose-500 flex items-center justify-center text-white font-mono font-bold text-[10px]"
-                  style={{ width: `${Math.min(100, (runwayDays / totalRequiredRunway) * 100)}%` }}
-                >
-                  Stock: {runwayDays}d
-                </div>
-                {/* Deficit / Gap */}
-                <div
-                  className="h-full bg-rose-200/90 border-l border-dashed border-rose-600 flex items-center justify-center text-rose-900 font-mono font-bold text-[10px]"
                   style={{
-                    width: `${Math.max(
-                      0,
-                      Math.min(100 - (runwayDays / totalRequiredRunway) * 100, (stockoutGapDays / totalRequiredRunway) * 100)
-                    )}%`
+                    width: `${
+                      runwayDays !== null && totalRequiredRunway > 0
+                        ? Math.min(100, (runwayDays / totalRequiredRunway) * 100)
+                        : 100
+                    }%`
                   }}
                 >
-                  Gap: {stockoutGapDays}d
+                  Stock: {runwayDays !== null ? `${runwayDays}d` : 'N/A'}
                 </div>
+                {/* Deficit / Gap */}
+                {stockoutGapDays > 0 && (
+                  <div
+                    className="h-full bg-rose-200/90 border-l border-dashed border-rose-600 flex items-center justify-center text-rose-900 font-mono font-bold text-[10px]"
+                    style={{
+                      width: `${Math.max(
+                        0,
+                        Math.min(
+                          100 - ((runwayDays ?? 0) / totalRequiredRunway) * 100,
+                          (stockoutGapDays / totalRequiredRunway) * 100
+                        )
+                      )}%`
+                    }}
+                  >
+                    Gap: {stockoutGapDays}d
+                  </div>
+                )}
                 {/* Safety buffer missing */}
-                <div
-                  className="h-full bg-amber-100 flex-1 flex items-center justify-center text-amber-900 font-mono text-[9px] font-bold"
-                >
-                  Buffer: {safetyBufferDays}d
+                <div className="h-full bg-amber-100 flex-1 flex items-center justify-center text-amber-900 font-mono text-[9px] font-bold">
+                  Buffer: {safeBuffer}d
                 </div>
               </div>
 
               <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono">
                 <span>Day 0 (Now)</span>
-                <span className="text-rose-600 font-bold">Stockout: Day {runwayDays}</span>
-                <span className="text-indigo-600 font-bold">Truck Arrives: Day {nextReplenishmentDays}</span>
-                <span>Buffer Target: Day {totalRequiredRunway}</span>
+                <span className="text-rose-600 font-bold">
+                  Stock Cover: {runwayDays !== null ? `Day ${runwayDays}` : 'N/A'}
+                </span>
+                <span className="text-indigo-600 font-bold">Lead Time: Day {safeLeadTime}</span>
+                <span>Cycle Target: Day {totalRequiredRunway}</span>
               </div>
             </div>
           </div>
@@ -302,36 +320,58 @@ export const WhyThisAlertModal: React.FC<WhyThisAlertModalProps> = ({
           <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs space-y-2">
             <div className="font-bold text-slate-800 flex items-center gap-1.5 text-[11px]">
               <Info className="w-3.5 h-3.5 text-slate-500" />
-              <span>Step-by-Step Computational Audit</span>
+              <span>Step-by-Step Computational Audit (Configurable Demo Thresholds)</span>
             </div>
             <ul className="space-y-1.5 text-[11px] text-slate-600 font-mono">
               <li className="flex items-start gap-1.5">
                 <span className="text-slate-400 font-bold">1.</span>
                 <span>
-                  <strong>Runway Calculation:</strong> {currentStock} units ÷ {forecastDemand} units/day ={' '}
-                  <strong className="text-rose-700">{runwayDays} days of supply</strong>.
+                  <strong>Runway Calculation:</strong>{' '}
+                  {safeForecastDemand > 0 ? (
+                    <>
+                      {safeStock} {unit} ÷ {safeForecastDemand} {unit}/day ={' '}
+                      <strong className="text-rose-700">{runwayDays} days of supply</strong>.
+                    </>
+                  ) : (
+                    <strong className="text-slate-700">Consumption rate is 0/day (runway not applicable).</strong>
+                  )}
                 </span>
               </li>
               <li className="flex items-start gap-1.5">
                 <span className="text-slate-400 font-bold">2.</span>
                 <span>
-                  <strong>Replenishment Horizon:</strong> Expected in{' '}
-                  <strong className="text-indigo-700">{nextReplenishmentDays} days</strong>.
+                  <strong>Delivery Lead Time (Demo Config):</strong> Expected in{' '}
+                  <strong className="text-indigo-700">{safeLeadTime} days</strong> (Max allowed: 3.5 days).
                 </span>
               </li>
               <li className="flex items-start gap-1.5">
                 <span className="text-slate-400 font-bold">3.</span>
                 <span>
-                  <strong>Deficit Gap:</strong> {nextReplenishmentDays}d - {runwayDays}d ={' '}
-                  <strong className="text-rose-700">{stockoutGapDays} days ({stockoutHours} hours) of stockout exposure</strong>{' '}
-                  before the truck arrives.
+                  <strong>Lead-Time Coverage Check:</strong>{' '}
+                  {runwayDays === null ? (
+                    <span>Evaluated against static minimum floor ({safeStock} {unit}).</span>
+                  ) : stockoutGapDays > 0 ? (
+                    <>
+                      Stock cover ({runwayDays}d) is below delivery lead time ({safeLeadTime}d) by{' '}
+                      <strong className="text-rose-700">
+                        {stockoutGapDays} days ({stockoutHours} hours)
+                      </strong>
+                      .
+                    </>
+                  ) : (
+                    <>
+                      Stock cover ({runwayDays}d) covers the {safeLeadTime}d delivery lead time (no lead-time stockout gap; alert is driven by safety buffer / minimum threshold floor).
+                    </>
+                  )}
                 </span>
               </li>
               <li className="flex items-start gap-1.5">
                 <span className="text-slate-400 font-bold">4.</span>
                 <span>
-                  <strong>Buffer Shortfall:</strong> Missing {deficitUnits} {unit} to achieve the mandated{' '}
-                  {safetyBufferDays}-day contingency buffer.
+                  <strong>Safety Buffer Target:</strong>{' '}
+                  {deficitUnits > 0
+                    ? `Shortfall of ${deficitUnits} ${unit} relative to the ${totalRequiredRunway}d (${safeLeadTime}d lead + ${safeBuffer}d buffer) demo target.`
+                    : `Current stock meets the ${totalRequiredRunway}d demo cycle buffer.`}
                 </span>
               </li>
             </ul>

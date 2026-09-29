@@ -53,16 +53,22 @@ export interface EvaluatedSupplyItem {
   criticalBufferMin: number;
   linkedRedistId: string | null;
   currentStock: number;
+  totalPhysicalStock?: number;
+  expiredBatchStock?: number;
   pendingOrders: number;
   effectiveStock: number;
   currentBurn: number;
   projectedDailyBurn: number;
   daysOfSafeStock: number;
+  estimatedStockoutDate?: string | null;
+  safetyStock?: number;
+  reorderPoint?: number;
   leadTimeDays: number;
   deficitDays: number;
   projectedDeficitUnits: number;
   riskScore: number;
   urgency: 'CRITICAL' | 'WARNING' | 'NORMAL';
+  primaryRiskReason?: string;
   recommendedReorder: number;
 }
 
@@ -81,6 +87,7 @@ interface PredictiveConsumptionTrendProps {
   isExportingPdf?: boolean;
   selectedMedicineId?: string;
   onSelectMedicine?: (id: string) => void;
+  thirtyDaySurgeCurve?: number[];
 }
 
 // 30-Day Seasonal historical surge multiplier curve for Rajasthan desert heatwave cycles
@@ -106,7 +113,8 @@ export const PredictiveConsumptionTrend: React.FC<PredictiveConsumptionTrendProp
   onDownloadReport,
   isExportingPdf = false,
   selectedMedicineId: controlledSelectedMedicineId,
-  onSelectMedicine
+  onSelectMedicine,
+  thirtyDaySurgeCurve
 }) => {
   // Selected Resource for deep analysis (uncontrolled fallback or controlled)
   const [internalSelectedMedicineId, setInternalSelectedMedicineId] = useState<string>(() => {
@@ -235,8 +243,12 @@ export const PredictiveConsumptionTrend: React.FC<PredictiveConsumptionTrendProp
       const dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
       // Retrieve 30-day seasonal factor
-      const factorIndex = Math.min(offset, SEASONAL_30DAY_SURGE_FACTORS.length - 1);
-      const curveFactor = SEASONAL_30DAY_SURGE_FACTORS[factorIndex];
+      const activeCurve =
+        Array.isArray(thirtyDaySurgeCurve) && thirtyDaySurgeCurve.length > 0
+          ? thirtyDaySurgeCurve
+          : SEASONAL_30DAY_SURGE_FACTORS;
+      const factorIndex = Math.min(offset, activeCurve.length - 1);
+      const curveFactor = activeCurve[factorIndex];
 
       // Day projected consumption for 2026 heatwave model
       const rampUp = Math.min(1.0, offset / 3.0);
@@ -296,7 +308,7 @@ export const PredictiveConsumptionTrend: React.FC<PredictiveConsumptionTrendProp
     }
 
     return dataPoints;
-  }, [activeSupply, customLeadTime, forecastHorizon, simulatedIntervention]);
+  }, [activeSupply, customLeadTime, forecastHorizon, simulatedIntervention, thirtyDaySurgeCurve]);
 
   // 30-Day Aggregated Demand vs Inventory Analysis
   const thirtyDayMetrics = useMemo(() => {

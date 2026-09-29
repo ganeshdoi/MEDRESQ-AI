@@ -1,0 +1,123 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all unknown access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Common Security Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Test connection probe
+    match /test/{testId} {
+      allow read: if true;
+    }
+
+    // User Profile Rules
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['id', 'email']) &&
+             data.id is string && data.id.size() <= 128 &&
+             data.email is string && data.email.size() <= 256 &&
+             (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 128)) &&
+             (!('role' in data) || (data.role is string && data.role.size() <= 64)) &&
+             (!('phcId' in data) || (data.phcId is string && data.phcId.size() <= 64));
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn();
+      allow list: if isSignedIn() && resource.data.id == request.auth.uid;
+      allow create: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming()) && incoming().id == request.auth.uid;
+      allow update: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming()) && incoming().id == existing().id;
+      allow delete: if isOwner(userId);
+    }
+
+    // Logistics Orders Rules
+    function isValidOrder(data) {
+      return data.keys().hasAll(['id', 'phcId', 'medicineName', 'quantityRequested', 'status']) &&
+             data.id is string && data.id.size() <= 64 &&
+             data.phcId is string && data.phcId.size() <= 64 &&
+             data.medicineName is string && data.medicineName.size() <= 128 &&
+             data.quantityRequested is number && data.quantityRequested >= 0 &&
+             data.status is string && data.status.size() <= 64 &&
+             (!('priority' in data) || (data.priority is string && data.priority.size() <= 32)) &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 512));
+    }
+
+    match /orders/{orderId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(orderId) && isValidOrder(incoming());
+      allow update: if isSignedIn() && isValidId(orderId) && isValidOrder(incoming());
+      allow delete: if isSignedIn();
+    }
+
+    // Multi-turn Chat Messages Rules
+    function isValidChatMessage(data) {
+      return data.keys().hasAll(['id', 'userId', 'role', 'content']) &&
+             data.id is string && data.id.size() <= 64 &&
+             data.userId is string && data.userId.size() <= 128 &&
+             data.role is string && data.role.size() <= 32 &&
+             data.content is string && data.content.size() <= 8192 &&
+             (!('modelUsed' in data) || (data.modelUsed is string && data.modelUsed.size() <= 64)) &&
+             (!('persona' in data) || (data.persona is string && data.persona.size() <= 64));
+    }
+
+    match /chat_messages/{messageId} {
+      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(messageId) && isValidChatMessage(incoming()) && incoming().userId == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(messageId) && isValidChatMessage(incoming()) && incoming().userId == existing().userId;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // Voice Logs Rules
+    function isValidVoiceLog(data) {
+      return data.keys().hasAll(['id', 'userId', 'transcript']) &&
+             data.id is string && data.id.size() <= 64 &&
+             data.userId is string && data.userId.size() <= 128 &&
+             data.transcript is string && data.transcript.size() <= 4096 &&
+             (!('parsedMedicine' in data) || (data.parsedMedicine is string && data.parsedMedicine.size() <= 128)) &&
+             (!('parsedQuantity' in data) || (data.parsedQuantity is number)) &&
+             (!('parsedTransaction' in data) || (data.parsedTransaction is string && data.parsedTransaction.size() <= 64));
+    }
+
+    match /voice_logs/{logId} {
+      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(logId) && isValidVoiceLog(incoming()) && incoming().userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // Offline Sync Audit Records
+    function isValidSyncAudit(data) {
+      return data.keys().hasAll(['id', 'status']) &&
+             data.id is string && data.id.size() <= 128 &&
+             data.status is string && data.status.size() <= 64;
+    }
+
+    match /offline_sync_audit/{auditId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidId(auditId) && isValidSyncAudit(incoming());
+      allow delete: if isSignedIn();
+    }
+  }
+}

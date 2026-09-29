@@ -2,10 +2,14 @@ import {
   NetworkFacility,
   LogisticsTransitRoute,
   RedistributionLink,
-  WeatherContourZone
+  WeatherContourZone,
+  MedicineItem
 } from '../types.ts';
+import { INDIA_PHC_DIRECTORY, PHC_GEO_COORDINATES } from './indiaPHCDirectory.ts';
+import { generateEssentialMedicinesForPHC } from './nationalEssentialMedicines.ts';
+import { evaluateNetworkMapFacilities } from '../utils/inventoryForecast.ts';
 
-export const RAJASTHAN_NETWORK_FACILITIES: NetworkFacility[] = [
+const BASE_NETWORK_FACILITIES: NetworkFacility[] = [
   // 1. Central Warehouse & Logistics Hubs
   {
     id: 'rmscl-mandore',
@@ -94,13 +98,15 @@ export const RAJASTHAN_NETWORK_FACILITIES: NetworkFacility[] = [
     coldChainTempC: 4.2,
     keyShortages: [
       { medicineName: 'Oral Rehydration Salts (ORS) Sachets 20.5g', currentStock: 210, projectedBurnPerDay: 115, daysRemaining: 1.8, deficitQuantity: 590, unit: 'Sachets' },
+      { medicineName: 'Polyvalent Anti-Snake Venom (ASV) 10ml', currentStock: 9, projectedBurnPerDay: 5, daysRemaining: 1.8, deficitQuantity: 25, unit: 'Vials' },
       { medicineName: 'Normal Saline (0.9% NaCl) IV Infusion 500ml', currentStock: 64, projectedBurnPerDay: 19, daysRemaining: 3.4, deficitQuantity: 116, unit: 'Bottles' },
+      { medicineName: 'Oxytocin Injection 10 IU/ml', currentStock: 18, projectedBurnPerDay: 5, daysRemaining: 3.6, deficitQuantity: 40, unit: 'Ampoules' },
       { medicineName: 'Ringer Lactate Injection 500ml', currentStock: 48, projectedBurnPerDay: 14, daysRemaining: 3.4, deficitQuantity: 92, unit: 'Bottles' }
     ],
     keySurpluses: [
       { medicineName: 'Paracetamol Tablets IP 500mg', currentStock: 4200, surplusQuantity: 1200, unit: 'Tablets' }
     ],
-    notes: 'Active Primary Facility: Severe heatwave surge with 44.8°C ambient temperature. Physical ORS buffer below transit window.'
+    notes: 'Active Primary Facility: Severe heatwave surge with 44.8°C ambient temperature. Physical ORS and ASV buffer below transit window.'
   },
   {
     id: 'phc-mandore',
@@ -159,9 +165,12 @@ export const RAJASTHAN_NETWORK_FACILITIES: NetworkFacility[] = [
     ],
     keySurpluses: [
       { medicineName: 'Oral Rehydration Salts (ORS) Sachets 20.5g', currentStock: 800, surplusQuantity: 300, unit: 'Sachets' },
+      { medicineName: 'Polyvalent Anti-Snake Venom (ASV) 10ml', currentStock: 24, surplusQuantity: 14, unit: 'Vials' },
+      { medicineName: 'Oxytocin Injection 10 IU/ml', currentStock: 40, surplusQuantity: 22, unit: 'Ampoules' },
+      { medicineName: 'Normal Saline (0.9% NaCl) IV Infusion 500ml', currentStock: 450, surplusQuantity: 180, unit: 'Bottles' },
       { medicineName: 'Ringer Lactate Injection 500ml', currentStock: 160, surplusQuantity: 70, unit: 'Bottles' }
     ],
-    notes: 'Located midway along Osian-Jodhpur corridor (24 km south-west of Osian). Potential rapid responder.'
+    notes: 'Located midway along Osian-Jodhpur corridor (19.1 km south-west of Osian). Rapid surplus responder with >14 days reserve.'
   },
   {
     id: 'phc-balesar',
@@ -196,31 +205,33 @@ export const RAJASTHAN_NETWORK_FACILITIES: NetworkFacility[] = [
   {
     id: 'phc-bhopalgarh',
     name: 'PHC Bhopalgarh',
-    code: 'RJ-JDP-PHC-051',
+    code: 'RJ-JDP-PHC-063',
     block: 'Bhopalgarh',
     district: 'Jodhpur',
     state: 'Rajasthan',
     facilityType: '24x7 PHC',
-    latitude: 26.652,
-    longitude: 73.524,
-    contactNumber: '+91 2928 221088',
-    medicalOfficerInCharge: 'Dr. Suman Bhati',
-    sanctionedBeds: 16,
-    occupiedBeds: 9,
-    capacityUtilization: 56,
+    latitude: 26.654,
+    longitude: 73.521,
+    contactNumber: '+91 2930 252088',
+    medicalOfficerInCharge: 'Dr. Sunita Saran',
+    sanctionedBeds: 20,
+    occupiedBeds: 13,
+    capacityUtilization: 65,
     operationalRisk: 'LOW',
     medicineRisk: 'SURPLUS_AVAILABLE',
     workforceStatus: 'OPTIMAL',
     preparednessStatus: 'PREPARED',
-    staffPresentCount: 11,
-    staffSanctionedCount: 12,
+    staffPresentCount: 14,
+    staffSanctionedCount: 16,
     coldChainTempC: 3.7,
     keyShortages: [],
     keySurpluses: [
       { medicineName: 'Oral Rehydration Salts (ORS) Sachets 20.5g', currentStock: 1400, surplusQuantity: 650, unit: 'Sachets' },
-      { medicineName: 'Normal Saline (0.9% NaCl) IV Infusion 500ml', currentStock: 320, surplusQuantity: 110, unit: 'Bottles' }
+      { medicineName: 'Normal Saline (0.9% NaCl) IV Infusion 500ml', currentStock: 320, surplusQuantity: 110, unit: 'Bottles' },
+      { medicineName: 'Polyvalent Anti-Snake Venom (ASV) 10ml', currentStock: 28, surplusQuantity: 16, unit: 'Vials' },
+      { medicineName: 'Oxytocin Injection 10 IU/ml', currentStock: 45, surplusQuantity: 24, unit: 'Ampoules' }
     ],
-    notes: 'Eastern sector facility with stable agricultural caseload and comfortable buffer reserves.'
+    notes: 'Eastern Jodhpur 24x7 delivery centre with stable caseload and comfortable buffer reserves of ORS, saline, ASV, and oxytocin.'
   },
   {
     id: 'phc-luni',
@@ -250,6 +261,151 @@ export const RAJASTHAN_NETWORK_FACILITIES: NetworkFacility[] = [
     ],
     notes: 'South Jodhpur river basin zone. Moderate temperature (40.1°C), routine non-surge outpatient volumes.'
   },
+  {
+    id: 'phc-shergarh',
+    name: 'PHC Shergarh Thar',
+    code: 'RJ-JDP-PHC-052',
+    block: 'Shergarh',
+    district: 'Jodhpur',
+    state: 'Rajasthan',
+    facilityType: 'PHC',
+    latitude: 26.321,
+    longitude: 72.285,
+    contactNumber: '+91 2929 261022',
+    medicalOfficerInCharge: 'Dr. Ashok Bhati',
+    sanctionedBeds: 16,
+    occupiedBeds: 9,
+    capacityUtilization: 56,
+    operationalRisk: 'LOW',
+    medicineRisk: 'SURPLUS_AVAILABLE',
+    workforceStatus: 'OPTIMAL',
+    preparednessStatus: 'PREPARED',
+    staffPresentCount: 11,
+    staffSanctionedCount: 14,
+    coldChainTempC: 3.9,
+    keyShortages: [],
+    keySurpluses: [
+      { medicineName: 'Oral Rehydration Salts (ORS) Sachets 20.5g', currentStock: 2400, surplusQuantity: 1100, unit: 'Sachets' },
+      { medicineName: 'Normal Saline (0.9% NaCl) IV Infusion 500ml', currentStock: 380, surplusQuantity: 140, unit: 'Bottles' }
+    ],
+    notes: 'Western desert block centre with solar-powered cold storage and ready surplus saline.'
+  },
+  {
+    id: 'phc-bap',
+    name: 'PHC Bap Desert Frontier',
+    code: 'RJ-PHL-PHC-004',
+    block: 'Bap',
+    district: 'Phalodi',
+    state: 'Rajasthan',
+    facilityType: '24x7 PHC',
+    latitude: 27.375,
+    longitude: 72.358,
+    contactNumber: '+91 2924 233011',
+    medicalOfficerInCharge: 'Dr. Rameshwar Lal Jat',
+    sanctionedBeds: 18,
+    occupiedBeds: 11,
+    capacityUtilization: 61,
+    operationalRisk: 'MODERATE',
+    medicineRisk: 'ADEQUATE',
+    workforceStatus: 'OPTIMAL',
+    preparednessStatus: 'ALERTED',
+    staffPresentCount: 12,
+    staffSanctionedCount: 14,
+    coldChainTempC: 4.0,
+    keyShortages: [],
+    keySurpluses: [
+      { medicineName: 'Oral Rehydration Salts (ORS) Sachets 20.5g', currentStock: 1900, surplusQuantity: 750, unit: 'Sachets' },
+      { medicineName: 'Polyvalent Anti-Snake Venom (ASV) 10ml', currentStock: 22, surplusQuantity: 10, unit: 'Vials' }
+    ],
+    notes: 'Northern Phalodi desert corridor 24x7 facility equipped with solar cold-chain backup.'
+  },
+  {
+    id: 'phc-pokhran',
+    name: 'PHC Pokhran Frontier',
+    code: 'RJ-JSM-PHC-005',
+    block: 'Pokhran',
+    district: 'Phalodi',
+    state: 'Rajasthan',
+    facilityType: '24x7 PHC',
+    latitude: 26.921,
+    longitude: 71.918,
+    contactNumber: '+91 2994 222118',
+    medicalOfficerInCharge: 'Dr. Hemant Purohit',
+    sanctionedBeds: 20,
+    occupiedBeds: 14,
+    capacityUtilization: 70,
+    operationalRisk: 'MODERATE',
+    medicineRisk: 'BUFFER_DEPLETING',
+    workforceStatus: 'MODERATE',
+    preparednessStatus: 'ALERTED',
+    staffPresentCount: 12,
+    staffSanctionedCount: 15,
+    coldChainTempC: 4.1,
+    keyShortages: [
+      { medicineName: 'Normal Saline (0.9% NaCl) IV Infusion 500ml', currentStock: 45, projectedBurnPerDay: 15, daysRemaining: 3.0, deficitQuantity: 80, unit: 'Bottles' }
+    ],
+    keySurpluses: [
+      { medicineName: 'Zinc Sulfate Dispersible Tablets 20mg', currentStock: 1800, surplusQuantity: 900, unit: 'Tablets' }
+    ],
+    notes: 'Strategic desert corridor health centre connecting Phalodi to Jaisalmer border.'
+  },
+  {
+    id: 'phc-dhorimanna',
+    name: 'PHC Dhorimanna Border',
+    code: 'RJ-BMR-PHC-018',
+    block: 'Dhorimanna',
+    district: 'Jodhpur',
+    state: 'Rajasthan',
+    facilityType: 'PHC',
+    latitude: 25.321,
+    longitude: 71.341,
+    contactNumber: '+91 2982 245033',
+    medicalOfficerInCharge: 'Dr. Ganpat Singh',
+    sanctionedBeds: 14,
+    occupiedBeds: 8,
+    capacityUtilization: 57,
+    operationalRisk: 'LOW',
+    medicineRisk: 'ADEQUATE',
+    workforceStatus: 'OPTIMAL',
+    preparednessStatus: 'PREPARED',
+    staffPresentCount: 9,
+    staffSanctionedCount: 10,
+    coldChainTempC: 4.0,
+    keyShortages: [],
+    keySurpluses: [
+      { medicineName: 'Oral Rehydration Salts (ORS) Sachets 20.5g', currentStock: 1600, surplusQuantity: 800, unit: 'Sachets' }
+    ],
+    notes: 'Southwestern Thar border facility.'
+  },
+  {
+    id: 'phc-nokha',
+    name: 'PHC Nokha Mandi',
+    code: 'RJ-BKN-PHC-009',
+    block: 'Nokha',
+    district: 'Phalodi',
+    state: 'Rajasthan',
+    facilityType: '24x7 PHC',
+    latitude: 27.598,
+    longitude: 73.421,
+    contactNumber: '+91 1531 220108',
+    medicalOfficerInCharge: 'Dr. Rakesh Godara',
+    sanctionedBeds: 20,
+    occupiedBeds: 15,
+    capacityUtilization: 75,
+    operationalRisk: 'LOW',
+    medicineRisk: 'SURPLUS_AVAILABLE',
+    workforceStatus: 'OPTIMAL',
+    preparednessStatus: 'PREPARED',
+    staffPresentCount: 15,
+    staffSanctionedCount: 18,
+    coldChainTempC: 3.7,
+    keyShortages: [],
+    keySurpluses: [
+      { medicineName: 'Paracetamol Tablets IP 500mg', currentStock: 25000, surplusQuantity: 12000, unit: 'Tablets' },
+      { medicineName: 'Normal Saline (0.9% NaCl) IV Infusion 500ml', currentStock: 650, surplusQuantity: 280, unit: 'Bottles' }
+    ],
+    notes: 'Northern railhead nodal PHC with extensive warehouse stock connections.'
+  },
 
   // 3. Community Health Centres (CHCs - Referral Hubs)
   {
@@ -277,10 +433,13 @@ export const RAJASTHAN_NETWORK_FACILITIES: NetworkFacility[] = [
     keyShortages: [],
     keySurpluses: [
       { medicineName: 'Oral Rehydration Salts (ORS) Sachets 20.5g', currentStock: 3200, surplusQuantity: 1500, unit: 'Sachets' },
+      { medicineName: 'Polyvalent Anti-Snake Venom (ASV) 10ml', currentStock: 50, surplusQuantity: 30, unit: 'Vials' },
+      { medicineName: 'Oxytocin Injection 10 IU/ml', currentStock: 80, surplusQuantity: 45, unit: 'Ampoules' },
+      { medicineName: 'Paracetamol IV Infusion 1000mg/100ml', currentStock: 600, surplusQuantity: 350, unit: 'Bottles' },
       { medicineName: 'Ringer Lactate Injection 500ml', currentStock: 650, surplusQuantity: 300, unit: 'Bottles' },
       { medicineName: 'Normal Saline (0.9% NaCl) IV Infusion 500ml', currentStock: 900, surplusQuantity: 380, unit: 'Bottles' }
     ],
-    notes: '30-bed block referral hospital. Equipped with major cold-chain ILR and emergency resuscitation bay.'
+    notes: '30-bed block referral hospital (29.8 km east of Osian). Equipped with major cold-chain ILR and surplus reserves >14 days.'
   },
   {
     id: 'chc-phalodi',
@@ -395,7 +554,8 @@ export const RAJASTHAN_NETWORK_FACILITIES: NetworkFacility[] = [
     staffSanctionedCount: 2,
     coldChainTempC: undefined,
     keyShortages: [
-      { medicineName: 'Oral Rehydration Salts (ORS) Sachets 20.5g', currentStock: 25, projectedBurnPerDay: 7, daysRemaining: 3.5, deficitQuantity: 45, unit: 'Sachets' }
+      { medicineName: 'Oral Rehydration Salts (ORS) Sachets 20.5g', currentStock: 25, projectedBurnPerDay: 7, daysRemaining: 3.5, deficitQuantity: 45, unit: 'Sachets' },
+      { medicineName: 'Oxytocin Injection 10 IU/ml', currentStock: 6, projectedBurnPerDay: 2, daysRemaining: 3.0, deficitQuantity: 15, unit: 'Ampoules' }
     ],
     keySurpluses: [],
     notes: 'Sub-centre 9.4 km southeast of Osian along desert gravel road.'
@@ -424,12 +584,108 @@ export const RAJASTHAN_NETWORK_FACILITIES: NetworkFacility[] = [
     coldChainTempC: undefined,
     keyShortages: [
       { medicineName: 'Oral Rehydration Salts (ORS) Sachets 20.5g', currentStock: 10, projectedBurnPerDay: 9, daysRemaining: 1.1, deficitQuantity: 80, unit: 'Sachets' },
+      { medicineName: 'Polyvalent Anti-Snake Venom (ASV) 10ml', currentStock: 1, projectedBurnPerDay: 2, daysRemaining: 0.5, deficitQuantity: 8, unit: 'Vials' },
       { medicineName: 'Zinc Sulfate Dispersible Tablets 20mg', currentStock: 12, projectedBurnPerDay: 6, daysRemaining: 2.0, deficitQuantity: 35, unit: 'Tablets' }
     ],
     keySurpluses: [],
     notes: 'Remote dune hamlet 17.5 km north-east of Osian. 100% bed occupancy with dehydration cases.'
   }
 ];
+
+// Automatically integrate ALL PHCs from INDIA_PHC_DIRECTORY so every PHC across India is plotted on the map
+const existingIds = new Set(BASE_NETWORK_FACILITIES.map((f) => f.id));
+
+const DIRECTORY_MAPPED_FACILITIES: NetworkFacility[] = INDIA_PHC_DIRECTORY.filter(
+  (phc) => !existingIds.has(phc.id)
+).map((phc, idx) => {
+  const coords = PHC_GEO_COORDINATES[phc.id] || {
+    lat: 26.5 + (idx % 7) * 0.12,
+    lng: 73.0 + (idx % 5) * 0.15
+  };
+  const utilization =
+    phc.sanctionedBeds > 0 ? Math.round((phc.occupiedBeds / phc.sanctionedBeds) * 100) : 60;
+
+  const isHighOccupancy = utilization >= 82;
+  const isModOccupancy = !isHighOccupancy && utilization >= 68;
+
+  const staffSanctioned = phc.type === '24x7 PHC' ? 16 : 12;
+  const staffPresent = isHighOccupancy ? staffSanctioned - 4 : isModOccupancy ? staffSanctioned - 2 : staffSanctioned - 1;
+
+  return {
+    id: phc.id,
+    name: phc.name,
+    code: phc.code,
+    block: phc.block,
+    district: phc.district,
+    state: phc.state,
+    facilityType: phc.type,
+    latitude: coords.lat,
+    longitude: coords.lng,
+    contactNumber: phc.contactNumber,
+    medicalOfficerInCharge: phc.medicalOfficerInCharge,
+    sanctionedBeds: phc.sanctionedBeds,
+    occupiedBeds: phc.occupiedBeds,
+    capacityUtilization: utilization,
+    operationalRisk: isHighOccupancy ? 'CRITICAL' : isModOccupancy ? 'MODERATE' : 'LOW',
+    medicineRisk: 'UNKNOWN',
+    workforceStatus: isHighOccupancy ? 'SHORTAGE' : isModOccupancy ? 'MODERATE' : 'OPTIMAL',
+    preparednessStatus: isHighOccupancy ? 'ACTION_REQUIRED' : isModOccupancy ? 'ALERTED' : 'PREPARED',
+    staffPresentCount: staffPresent,
+    staffSanctionedCount: staffSanctioned,
+    coldChainTempC: Number((3.6 + (idx % 7) * 0.1).toFixed(1)),
+    keyShortages: [],
+    keySurpluses: [],
+    notes: `${phc.type} serving ${phc.populationServed.toLocaleString()} citizens and ${phc.subCentresCovered} Sub-Centres/HWCs in ${phc.block} block, ${phc.district} (${phc.state}). Located ${phc.distanceKmFromDistrictHQ} km from District HQ.`
+  };
+});
+
+/**
+ * Raw facility metadata with static shortages/surpluses cleared so status is always calculated
+ * from the facility-to-inventory mapping (or marked UNKNOWN if unmatched).
+ */
+export const RAW_NETWORK_FACILITIES: NetworkFacility[] = [
+  ...BASE_NETWORK_FACILITIES.map((f) => ({
+    ...f,
+    medicineRisk: 'UNKNOWN' as const,
+    keyShortages: [],
+    keySurpluses: []
+  })),
+  ...DIRECTORY_MAPPED_FACILITIES
+];
+
+/**
+ * Builds the facility-to-inventory map using the existing INDIA_PHC_DIRECTORY -> generateEssentialMedicinesForPHC mapping.
+ * Facilities not present in INDIA_PHC_DIRECTORY (e.g., Sub-Centres, CHCs, or Warehouses without a PHC ledger) remain unmapped.
+ */
+export function buildDefaultFacilityInventoryMap(
+  activePHCId?: string,
+  activePHCMedicines?: MedicineItem[]
+): Record<string, MedicineItem[]> {
+  const map: Record<string, MedicineItem[]> = {};
+  for (const phc of INDIA_PHC_DIRECTORY) {
+    if (activePHCId && phc.id === activePHCId && Array.isArray(activePHCMedicines) && activePHCMedicines.length > 0) {
+      map[phc.id] = activePHCMedicines;
+      map[phc.code] = activePHCMedicines;
+    } else {
+      const meds = generateEssentialMedicinesForPHC(
+        phc.id,
+        `${phc.district} District Drug Warehouse (RMSCL)`
+      );
+      map[phc.id] = meds;
+      map[phc.code] = meds;
+    }
+  }
+  return map;
+}
+
+export const DEFAULT_FACILITY_INVENTORY_MAP: Record<string, MedicineItem[]> =
+  buildDefaultFacilityInventoryMap();
+
+export const RAJASTHAN_NETWORK_FACILITIES: NetworkFacility[] = evaluateNetworkMapFacilities(
+  RAW_NETWORK_FACILITIES,
+  DEFAULT_FACILITY_INVENTORY_MAP,
+  { assessedMedicineQuery: 'ALL', isSimulatedData: true }
+);
 
 // Active Logistics Dispatches & Routes
 export const ACTIVE_LOGISTICS_ROUTES: LogisticsTransitRoute[] = [
@@ -562,11 +818,11 @@ export const REDISTRIBUTION_MAP_LINKS: RedistributionLink[] = [
   }
 ];
 
-// Meteorological Early Warning Contour Polygons (Heatwave Alerts)
+// Simulated Seasonal Heatwave Scenario Contours (Demo Data — Not Live Weather)
 export const WEATHER_CONTOURS: WeatherContourZone[] = [
   {
     id: 'imd-heatwave-red',
-    name: 'IMD Level-4 Severe Heatwave Zone (Thar Frontier)',
+    name: 'Simulated Severe Heatwave Scenario Zone (Thar Frontier Demo)',
     alertLevel: 'RED_ALERT',
     ambientTempC: 46.5,
     relativeHumidity: 12,
@@ -579,11 +835,11 @@ export const WEATHER_CONTOURS: WeatherContourZone[] = [
       [26.95, 72.05],
       [27.35, 72.10]
     ],
-    advisoryText: 'Catastrophic desert heat spike. Maximum temperature 46.5°C with severe desiccating dust winds. Acute dehydration risk index at emergency ceiling.'
+    advisoryText: 'Simulated desert heat scenario (46.5°C demo parameter) used to model elevated oral/IV rehydration demand.'
   },
   {
     id: 'imd-heatwave-orange',
-    name: 'IMD Level-3 Severe Heatwave Warning (Jodhpur-Osian Basin)',
+    name: 'Simulated Elevated Heat Scenario Zone (Jodhpur-Osian Basin Demo)',
     alertLevel: 'ORANGE_ALERT',
     ambientTempC: 44.8,
     relativeHumidity: 17,
@@ -597,11 +853,11 @@ export const WEATHER_CONTOURS: WeatherContourZone[] = [
       [26.65, 72.50],
       [26.90, 72.60]
     ],
-    advisoryText: 'Persistent temperature anomaly +4.3°C across Osian, Mandore, Tinwari, and Baori blocks. Fluid demand elasticity surged by 2.3×.'
+    advisoryText: 'Simulated summer temperature scenario across Osian, Mandore, Tinwari, and Baori blocks (synthetic demo overlay).'
   },
   {
     id: 'imd-heatwave-yellow',
-    name: 'IMD Level-2 Moderate Summer Warning (South-Eastern Belt)',
+    name: 'Simulated Moderate Summer Scenario Zone (South-Eastern Belt Demo)',
     alertLevel: 'YELLOW_ALERT',
     ambientTempC: 40.5,
     relativeHumidity: 32,
@@ -613,7 +869,7 @@ export const WEATHER_CONTOURS: WeatherContourZone[] = [
       [26.00, 73.00],
       [26.35, 73.15]
     ],
-    advisoryText: 'Standard summer temperatures with moderate humidity along Luni and Bilara river plains.'
+    advisoryText: 'Simulated moderate summer scenario along Luni and Bilara river plains (synthetic demo overlay).'
   }
 ];
 

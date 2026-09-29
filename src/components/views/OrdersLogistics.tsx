@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Truck,
   Plus,
@@ -10,12 +10,15 @@ import {
   AlertCircle,
   FileCheck2,
   MapPin,
-  FilterX
+  FilterX,
+  Search,
+  X
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext.tsx';
 import { StatusBadge } from '../ui/StatusBadge.tsx';
 import { OrderModal } from '../ui/OrderModal.tsx';
 import { EmptyState } from '../ui/EmptyState.tsx';
+import { matchesSearchKeywords } from '../../utils/globalSearch.ts';
 
 export const OrdersLogistics: React.FC = () => {
   const {
@@ -23,23 +26,52 @@ export const OrdersLogistics: React.FC = () => {
     advanceOrder,
     redistributions,
     approveRedistribution,
-    selectedPHC,
-    showNotification
+    advanceRedistribution,
+    selectedPHC
   } = useApp();
 
   const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
   const [selectedFilter, setSelectedFilter] = useState('ALL');
+  const [searchQuery, setSearchQuery] = useState('');
 
-  const filteredOrders = orders.filter(o => {
+  useEffect(() => {
+    const handleGlobalSearch = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.query) {
+        setSearchQuery(detail.query);
+        setSelectedFilter('ALL');
+      }
+    };
+    window.addEventListener('medresq:global-search', handleGlobalSearch);
+    return () => window.removeEventListener('medresq:global-search', handleGlobalSearch);
+  }, []);
+
+  const filteredOrders = orders.filter((o) => {
+    if (searchQuery.trim()) {
+      const matches = matchesSearchKeywords(
+        searchQuery,
+        o.id,
+        o.medicineName,
+        o.source,
+        o.destination,
+        o.status,
+        o.priority,
+        o.consignmentId
+      );
+      if (!matches) return false;
+    }
     if (selectedFilter === 'ALL') return true;
     if (selectedFilter === 'ACTIVE') return o.status !== 'RECEIVED';
     if (selectedFilter === 'RECEIVED') return o.status === 'RECEIVED';
     return true;
   });
 
-  const handleApproveTransfer = (id: string, name: string) => {
+  const handleApproveTransfer = (id: string) => {
     approveRedistribution(id);
-    showNotification(`Inter-PHC transfer approved: Dispatching batch of ${name}.`);
+  };
+
+  const handleAdvanceTransfer = (id: string) => {
+    advanceRedistribution(id);
   };
 
   return (
@@ -49,16 +81,18 @@ export const OrdersLogistics: React.FC = () => {
         <div>
           <div className="flex items-center gap-2">
             <span className="text-[10px] font-bold text-blue-800 bg-blue-100 px-2 py-0.5 rounded font-mono uppercase tracking-wider">
-              Supply Chain & Logistics
+              Replenishment &amp; Transfers
             </span>
-            <span className="text-xs text-slate-500 font-mono">RMSCL Mandore Hub</span>
+            <span className="text-xs text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded font-mono">
+              Synthetic / Demo Warehouse &amp; PHC Transfer Pipeline
+            </span>
           </div>
           <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight mt-1 flex items-center gap-2">
             <Truck className="w-5 h-5 text-blue-600" />
-            <span>Orders, Consignments & Lateral PHC Transfers</span>
+            <span>Replenishment Orders &amp; Inter-PHC Lateral Transfers</span>
           </h1>
           <p className="text-xs text-slate-600 mt-0.5">
-            Procurement pipeline from district drug warehouses to facility stockrooms, plus authorized lateral transfers for {selectedPHC.name}.
+            Manage warehouse replenishment indents and execute validated inter-PHC surplus medicine transfers for <strong>{selectedPHC.name}</strong>.
           </p>
         </div>
 
@@ -89,68 +123,85 @@ export const OrdersLogistics: React.FC = () => {
         </div>
 
         <p className="text-xs text-slate-600">
-          Autonomous balancing algorithm pairs facilities experiencing rapid stock depletion with neighboring clinics holding certified surplus batches.
+          Rule-based balancing pairs facilities experiencing rapid stock depletion with neighboring clinics holding verified surplus batches in the demo network.
         </p>
 
         <div className="space-y-3">
-          {redistributions.map((item) => (
-            <div
-              key={item.id}
-              className={`p-4 rounded-xl border flex flex-col md:flex-row md:items-center justify-between gap-4 transition-all ${
-                item.status === 'APPROVED'
-                  ? 'border-emerald-300 bg-emerald-50/60'
-                  : 'border-slate-200 bg-slate-50/70 hover:border-slate-300'
-              }`}
-            >
-              <div className="space-y-1.5">
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <span className="font-bold text-slate-900 text-sm">{item.medicineName}</span>
-                  <span className="font-mono text-emerald-950 bg-emerald-100 px-2.5 py-0.5 rounded-full text-xs font-bold border border-emerald-300">
-                    {item.transferQuantity} Units
-                  </span>
-                  <span className="text-[10px] font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
-                    Batch: {item.batchNumber}
-                  </span>
-                </div>
-
-                <div className="text-xs text-slate-700 flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <span className="font-semibold text-slate-800">
-                    Source: {item.sourcePHCName} (Surplus)
-                  </span>
-                  <span>→</span>
-                  <span className="font-bold text-rose-800">
-                    Destination: {item.destinationPHCName} (Imminent Stockout)
-                  </span>
-                  <span>•</span>
-                  <span className="text-slate-500 font-mono text-[11px]">
-                    Distance: {item.transitDistanceKm} km (~{item.estimatedTransitTimeHours}h transit)
-                  </span>
-                </div>
-
-                <div className="text-[11px] text-slate-600 font-medium">
-                  Clinical Rationale: {item.clinicalRationale}
-                </div>
-              </div>
-
-              <div className="shrink-0 flex items-center gap-3">
-                {item.status === 'APPROVED' ? (
-                  <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-900 bg-emerald-100/90 px-3.5 py-2 rounded-lg border border-emerald-300">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-700" />
-                    <span>Transfer Approved & En Route</span>
+          {redistributions.map((item) => {
+            const isApproved = item.status === 'APPROVED' || item.status === 'IN_TRANSIT' || item.status === 'COMPLETED';
+            const qty = item.recommendedTransferQuantity || item.transferQuantity || 0;
+            const donor = item.sourcePHCName || item.sourcePHC?.name || 'Donor PHC';
+            const recipient = item.destinationPHCName || item.targetPHC?.name || 'Recipient PHC';
+            return (
+              <div
+                key={item.id}
+                className={`p-4 rounded-xl border flex flex-col md:flex-row md:items-center justify-between gap-4 transition-all ${
+                  isApproved
+                    ? 'border-emerald-300 bg-emerald-50/60'
+                    : 'border-slate-200 bg-slate-50/70 hover:border-slate-300'
+                }`}
+              >
+                <div className="space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="font-bold text-slate-900 text-sm">{item.medicineName}</span>
+                    <span className="font-mono text-emerald-950 bg-emerald-100 px-2.5 py-0.5 rounded-full text-xs font-bold border border-emerald-300">
+                      {qty} Units
+                    </span>
+                    <span className="text-[10px] font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+                      ID: {item.id}
+                    </span>
                   </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => handleApproveTransfer(item.id, item.medicineName)}
-                    className="px-4 py-2 bg-emerald-700 text-white rounded-lg text-xs font-bold hover:bg-emerald-800 flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
-                  >
-                    <CheckCircle2 className="w-4 h-4" />
-                    <span>Approve Lateral Transfer</span>
-                  </button>
-                )}
+
+                  <div className="text-xs text-slate-700 flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="font-semibold text-slate-800">
+                      Donor: {donor} (Surplus Validated)
+                    </span>
+                    <span>→</span>
+                    <span className="font-bold text-rose-800">
+                      Recipient: {recipient}
+                    </span>
+                    <span>•</span>
+                    <span className="text-slate-500 font-mono text-[11px]">
+                      Distance: {item.transitDistanceKm} km (~{item.estimatedTransitTimeHours}h transit)
+                    </span>
+                  </div>
+
+                  <div className="text-[11px] text-slate-600 font-medium">
+                    Supply Rationale: {item.clinicalRationale}
+                  </div>
+                </div>
+
+                <div className="shrink-0 flex flex-wrap items-center gap-2">
+                  {isApproved ? (
+                    <>
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-900 bg-emerald-100/90 px-3 py-2 rounded-lg border border-emerald-300 font-mono">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-700" />
+                        <span>Status: {item.status} · Donor Deducted &amp; Receiver Credited</span>
+                      </div>
+                      {item.status !== 'COMPLETED' && (
+                        <button
+                          type="button"
+                          onClick={() => handleAdvanceTransfer(item.id)}
+                          className="px-3 py-2 bg-slate-900 text-white rounded-lg text-xs font-bold hover:bg-slate-800 transition-colors cursor-pointer"
+                        >
+                          {item.status === 'APPROVED' ? 'Mark In Transit →' : 'Mark Completed →'}
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleApproveTransfer(item.id)}
+                      className="px-4 py-2 bg-emerald-700 text-white rounded-lg text-xs font-bold hover:bg-emerald-800 flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>Approve Lateral Transfer ({item.status})</span>
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
@@ -158,13 +209,32 @@ export const OrdersLogistics: React.FC = () => {
       <div className="bg-white rounded-xl border border-slate-200/90 shadow-xs overflow-hidden flex flex-col">
         <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50/80">
           <div>
-            <h3 className="font-bold text-sm text-slate-900">Procurement & Warehouse Indent Tracking</h3>
+            <h3 className="font-bold text-sm text-slate-900">Procurement &amp; Warehouse Indent Tracking</h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              Direct telemetry from RMSCL District Drug Warehouses (DVDMS Interop)
+              Local SQLite &amp; Offline-Queue Replenishment Pipeline (Simulated District Warehouse Dispatch)
             </p>
           </div>
 
-          <div className="flex items-center gap-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search indent ID, drug, warehouse..."
+                className="bg-white border border-slate-300 rounded-lg pl-8 pr-7 py-1.5 text-xs text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs w-52 sm:w-64"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
             <span className="text-slate-600 font-bold">Filter:</span>
             <select
               value={selectedFilter}
@@ -184,9 +254,12 @@ export const OrdersLogistics: React.FC = () => {
               <EmptyState
                 icon={FilterX}
                 title="No Orders Match Filter"
-                description="There are currently no drug procurement orders matching this status filter."
+                description="There are currently no drug procurement orders matching this status filter or search query."
                 actionText="Show All Requisitions"
-                onAction={() => setSelectedFilter('ALL')}
+                onAction={() => {
+                  setSelectedFilter('ALL');
+                  setSearchQuery('');
+                }}
               />
             </div>
           ) : (
@@ -249,7 +322,6 @@ export const OrdersLogistics: React.FC = () => {
                           type="button"
                           onClick={() => {
                             advanceOrder(ord.id);
-                            showNotification(`Consignment ${ord.id} status updated.`);
                           }}
                           className="px-3 py-1 bg-slate-900 text-white rounded-lg text-xs font-bold hover:bg-slate-800 transition-colors shadow-2xs cursor-pointer"
                         >
@@ -272,7 +344,7 @@ export const OrdersLogistics: React.FC = () => {
           <span>
             Total active requisitions: <strong>{filteredOrders.length}</strong>
           </span>
-          <span className="font-mono text-slate-500">Gateway: RMSCL DVDMS 4.2</span>
+          <span className="font-mono text-slate-500">Mode: Simulated Warehouse Pipeline (Local DB)</span>
         </div>
       </div>
 
