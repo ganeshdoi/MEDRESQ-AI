@@ -73,19 +73,28 @@ export const PHCAuthPortal: React.FC<PHCAuthPortalProps> = ({
   selectedPHC,
   targetPHCToUnlock,
   pendingActionLabel,
-  initialTab = 'signin',
+  initialTab = 'demo',
   onAuthenticated,
   onCloseModal,
+  onGoogleSignIn,
   onLogout,
   activeSession
 }) => {
-  const defaultOfficerId = getPHCInchargeCredential(targetPHCToUnlock || selectedPHC).officerId;
-
-  // Support two login modes: 'DEMO_ACCESS' (no ID/password required) and 'OFFICER_LOGIN' (Officer ID + Password)
-  const [loginMode, setLoginMode] = useState<'DEMO_ACCESS' | 'OFFICER_LOGIN'>(() =>
-    initialTab === 'demo' ? 'DEMO_ACCESS' : 'OFFICER_LOGIN'
+  const [chosenDemoPhcId, setChosenDemoPhcId] = useState<string>(
+    (targetPHCToUnlock || selectedPHC).id
   );
-  // Allow user with an active session to switch to the login mode switcher directly inside the modal
+  const chosenDemoPHC =
+    facilities.find((f) => f.id === chosenDemoPhcId) || targetPHCToUnlock || selectedPHC;
+
+  const defaultOfficerId = getPHCInchargeCredential(chosenDemoPHC).officerId;
+
+  // Default to 'DEMO_ACCESS' so judges always see the single "MEDRESQ AI Demo Access" login
+  const [loginMode, setLoginMode] = useState<'DEMO_ACCESS' | 'OFFICER_LOGIN'>(() =>
+    initialTab === 'officer' ? 'OFFICER_LOGIN' : 'DEMO_ACCESS'
+  );
+  const [showExtensibleProductionAuth, setShowExtensibleProductionAuth] = useState<boolean>(
+    initialTab === 'officer'
+  );
   const [isSwitchingModeFromSession, setIsSwitchingModeFromSession] = useState<boolean>(false);
 
   const [enteredOfficerId, setEnteredOfficerId] = useState<string>(defaultOfficerId);
@@ -98,20 +107,14 @@ export const PHCAuthPortal: React.FC<PHCAuthPortalProps> = ({
   const [showDemoReference, setShowDemoReference] = useState<boolean>(false);
 
   useEffect(() => {
-    if (initialTab === 'demo') {
-      setLoginMode('DEMO_ACCESS');
-    } else if (initialTab === 'officer' || initialTab === 'signin') {
-      setLoginMode('OFFICER_LOGIN');
-    }
-  }, [initialTab]);
-
-  useEffect(() => {
+    setChosenDemoPhcId((targetPHCToUnlock || selectedPHC).id);
     const nextOfficerId = getPHCInchargeCredential(targetPHCToUnlock || selectedPHC).officerId;
     setEnteredOfficerId(nextOfficerId);
   }, [selectedPHC, targetPHCToUnlock]);
 
-  // Handler 1: DEMO ACCESS — No Officer ID or password required
-  const handleContinueAsDemo = async () => {
+  // Handler 1: MEDRESQ AI Demo Access — Single 1-click synthetic demo account login + PHC selection
+  const handleContinueAsDemo = async (overridePhc?: PHCFacility) => {
+    const targetFacility = overridePhc || chosenDemoPHC;
     setAuthError(null);
     setAuthSuccessMsg(null);
     setIsSubmitting(true);
@@ -119,24 +122,36 @@ export const PHCAuthPortal: React.FC<PHCAuthPortalProps> = ({
     try {
       const response = await fetch('/api/auth/demo', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phcId: targetFacility.id })
       });
 
       const data = await response.json().catch(() => ({}));
 
       if (response.ok && data?.ok && data?.session && data?.assignedPHC) {
+        const assignedPHC: PHCFacility =
+          facilities.find((f) => f.id === targetFacility.id) ||
+          facilities.find((f) => f.id === data.assignedPHC.id) ||
+          targetFacility;
         const session: AuthenticatedInchargeSession = {
           ...data.session,
+          assignedPhcId: assignedPHC.id,
+          assignedPhcName: assignedPHC.name,
+          phcId: assignedPHC.id,
+          phcName: assignedPHC.name,
+          phcCode: assignedPHC.code,
+          district: assignedPHC.district,
+          block: assignedPHC.block,
+          state: assignedPHC.state,
+          unlockedPhcIds: facilities.map((f) => f.id),
           loginMode: 'DEMO_ACCESS',
           isDemoAccount: true
         };
-        const assignedPHC: PHCFacility =
-          facilities.find((f) => f.id === data.assignedPHC.id) || data.assignedPHC;
 
         saveInchargeSession(session, false);
         setIsSwitchingModeFromSession(false);
         setAuthSuccessMsg(
-          `Demo Access activated for ${session.officerName} (${assignedPHC.name}). Opening dashboard...`
+          `MEDRESQ AI Demo Access activated for ${assignedPHC.name}. Opening dashboard...`
         );
         onAuthenticated(session, assignedPHC);
         return;
@@ -147,16 +162,18 @@ export const PHCAuthPortal: React.FC<PHCAuthPortalProps> = ({
       setIsSubmitting(false);
     }
 
-    const { session, assignedPHC } = createDemoOfficerSession(facilities);
+    const { session, assignedPHC } = createDemoOfficerSession(facilities, {
+      targetPHC: targetFacility
+    });
     saveInchargeSession(session, false);
     setIsSwitchingModeFromSession(false);
     setAuthSuccessMsg(
-      `Demo Access activated for ${session.officerName} (${assignedPHC.name}). Opening dashboard...`
+      `MEDRESQ AI Demo Access activated for ${assignedPHC.name}. Opening dashboard...`
     );
     onAuthenticated(session, assignedPHC);
   };
 
-  // Handler 2: OFFICER LOGIN — Existing Officer ID + Password authentication
+  // Handler 2: Extensible Production Officer Login (kept intact for future deployment)
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
@@ -216,7 +233,7 @@ export const PHCAuthPortal: React.FC<PHCAuthPortalProps> = ({
     }
   };
 
-  // When an Officer Session or Demo Session is already active (and user hasn't clicked "Switch Mode")
+  // When an Officer Session or Demo Session is already active
   if (activeSession && !isSwitchingModeFromSession) {
     const isDemoSession =
       activeSession.loginMode === 'DEMO_ACCESS' || Boolean(activeSession.isDemoAccount);
@@ -235,15 +252,19 @@ export const PHCAuthPortal: React.FC<PHCAuthPortalProps> = ({
                 <ShieldCheck className="w-5 h-5" />
               </div>
               <div>
-                <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 flex-wrap">
                   <span className="text-[10px] font-mono uppercase tracking-wider text-teal-300 font-bold">
-                    MEDRESQ AI · PHC OPERATIONS PORTAL
+                    MEDRESQ AI Demo Access
                   </span>
-                  {isDemoSession && (
-                    <span className="px-2 py-0.5 rounded bg-amber-400/20 border border-amber-300/40 text-amber-200 text-[10px] font-mono font-bold">
-                      DEMO ACCOUNT · SYNTHETIC DATA
-                    </span>
-                  )}
+                  <span className="px-2 py-0.5 rounded bg-teal-500/20 border border-teal-400/40 text-teal-200 text-[10px] font-mono font-bold">
+                    Demo Mode
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-amber-400/20 border border-amber-300/40 text-amber-200 text-[10px] font-mono font-bold">
+                    DEMO ACCOUNT
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-amber-400/20 border border-amber-300/40 text-amber-200 text-[10px] font-mono font-bold">
+                    SYNTHETIC DATA
+                  </span>
                 </div>
                 <h2 id="bound-session-modal-title" className="text-base font-bold text-white mt-0.5">
                   {activeSession.officerName || activeSession.inchargeName}
@@ -263,86 +284,89 @@ export const PHCAuthPortal: React.FC<PHCAuthPortalProps> = ({
           </div>
 
           <div className="p-6 space-y-4 text-xs">
-            {isDemoSession ? (
-              <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 flex items-start gap-2.5">
-                <Sparkles className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-bold">Demo Access Session Active</span>
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-200/80 text-amber-950 font-bold">
-                      DEMO ACCOUNT · SYNTHETIC DATA
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-amber-900 mt-0.5 leading-relaxed">
-                    Signed in as <strong>Demo Medical Officer</strong> for{' '}
-                    <strong>PHC Osian</strong> (Jodhpur, Rajasthan). This session uses synthetic
-                    demonstration data for prototype evaluation.
-                  </p>
+            <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 flex items-start gap-2.5">
+              <Sparkles className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+              <div>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="font-bold">MEDRESQ AI Demo Access Active</span>
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-teal-100 text-teal-900 border border-teal-300 font-bold">
+                    Demo Mode
+                  </span>
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-200/80 text-amber-950 font-bold">
+                    DEMO ACCOUNT
+                  </span>
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-200/80 text-amber-950 font-bold">
+                    SYNTHETIC DATA
+                  </span>
                 </div>
+                <p className="text-[11px] text-amber-900 mt-1 leading-relaxed">
+                  Signed in with the synthetic <strong>MEDRESQ AI Demo Access</strong> account. You can freely switch between any demo PHC facility below without requiring separate facility passwords.
+                </p>
               </div>
-            ) : (
-              <div className="p-3.5 rounded-xl bg-teal-50 border border-teal-200 text-teal-950 flex items-start gap-2.5">
-                <Lock className="w-4 h-4 text-teal-700 shrink-0 mt-0.5" />
-                <div>
-                  <div className="font-bold">Authorized Officer Session Active</div>
-                  <p className="text-[11px] text-teal-800 mt-0.5 leading-relaxed">
-                    Your session is authenticated via Officer Login for{' '}
-                    <strong>{activeSession.assignedPhcName || selectedPHC.name}</strong>. Protected
-                    supply-chain actions are unlocked for this session.
-                  </p>
-                </div>
+            </div>
+
+            {/* Facility / PHC Selector inside active Demo Session */}
+            <div className="p-3.5 rounded-xl bg-teal-50/70 border border-teal-200 space-y-2">
+              <label
+                htmlFor="session-phc-facility-select"
+                className="block text-[11px] font-mono uppercase tracking-wider text-teal-900 font-bold"
+              >
+                Select Active PHC / Facility (No Password Required in Demo Mode)
+              </label>
+              <div className="flex items-center gap-2">
+                <select
+                  id="session-phc-facility-select"
+                  value={chosenDemoPhcId}
+                  onChange={(e) => {
+                    const nextPhc = facilities.find((f) => f.id === e.target.value);
+                    if (nextPhc) {
+                      setChosenDemoPhcId(nextPhc.id);
+                      void handleContinueAsDemo(nextPhc);
+                    }
+                  }}
+                  className="flex-1 px-3 py-2 rounded-xl border border-teal-300 bg-white text-slate-900 font-bold text-xs focus:outline-none focus:ring-2 focus:ring-teal-600 cursor-pointer"
+                >
+                  {facilities.map((fac) => (
+                    <option key={fac.id} value={fac.id}>
+                      {fac.name} ({fac.code}) — {fac.block}, {fac.district}, {fac.state}
+                    </option>
+                  ))}
+                </select>
               </div>
-            )}
+            </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-slate-50 p-4 rounded-xl border border-slate-200">
               <div>
                 <span className="text-[10px] font-mono uppercase text-slate-500 block">
-                  Officer ID
-                </span>
-                <strong className="font-mono text-sm text-slate-900">
-                  {activeSession.officerId}
-                </strong>
-              </div>
-              <div>
-                <span className="text-[10px] font-mono uppercase text-slate-500 block">
-                  Designation
-                </span>
-                <strong className="text-slate-900">
-                  {activeSession.designation || 'Medical Officer In-Charge'}
-                </strong>
-              </div>
-              <div>
-                <span className="text-[10px] font-mono uppercase text-slate-500 block">
-                  Assigned PHC
+                  Active Facility / PHC
                 </span>
                 <strong className="text-teal-900">
-                  {activeSession.assignedPhcName || selectedPHC.name}
+                  {selectedPHC.name} ({selectedPHC.code})
                 </strong>
               </div>
               <div>
                 <span className="text-[10px] font-mono uppercase text-slate-500 block">
-                  Login Mode
+                  Synthetic Demo Account
                 </span>
-                <span className="inline-flex items-center gap-1 font-mono font-bold text-slate-800">
-                  {isDemoSession ? 'DEMO ACCESS (SYNTHETIC)' : 'OFFICER LOGIN'}
-                </span>
+                <strong className="text-slate-900">
+                  {activeSession.officerName || activeSession.inchargeName} ({activeSession.officerId})
+                </strong>
               </div>
               <div>
                 <span className="text-[10px] font-mono uppercase text-slate-500 block">
                   District &amp; State
                 </span>
                 <strong className="text-slate-900">
-                  {activeSession.district || selectedPHC.district},{' '}
-                  {activeSession.state || selectedPHC.state}
+                  {selectedPHC.district}, {selectedPHC.state}
                 </strong>
               </div>
               <div>
                 <span className="text-[10px] font-mono uppercase text-slate-500 block">
-                  Authentication Status
+                  Authentication Mode
                 </span>
                 <span className="inline-flex items-center gap-1 font-mono font-bold text-emerald-700">
                   <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>{activeSession.authenticationStatus || 'AUTHENTICATED'}</span>
+                  <span>{isDemoSession ? 'DEMO MODE (SYNTHETIC)' : 'OFFICER LOGIN'}</span>
                 </span>
               </div>
             </div>
@@ -353,25 +377,11 @@ export const PHCAuthPortal: React.FC<PHCAuthPortalProps> = ({
                   <button
                     type="button"
                     onClick={onCloseModal}
-                    className="px-3.5 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-semibold cursor-pointer"
+                    className="px-4 py-2 rounded-xl bg-teal-700 hover:bg-teal-800 text-white font-bold cursor-pointer"
                   >
                     Continue Working
                   </button>
                 )}
-                <button
-                  type="button"
-                  id="session-switch-login-mode-btn"
-                  onClick={() => {
-                    setLoginMode(isDemoSession ? 'OFFICER_LOGIN' : 'DEMO_ACCESS');
-                    setIsSwitchingModeFromSession(true);
-                  }}
-                  className="px-3.5 py-2 rounded-xl border border-teal-200 bg-teal-50 hover:bg-teal-100 text-teal-900 font-bold flex items-center gap-1.5 cursor-pointer"
-                >
-                  <ArrowRightLeft className="w-3.5 h-3.5 text-teal-700" />
-                  <span>
-                    {isDemoSession ? 'Switch to Officer Login' : 'Switch to Demo Access'}
-                  </span>
-                </button>
               </div>
               {onLogout && (
                 <button
@@ -380,7 +390,7 @@ export const PHCAuthPortal: React.FC<PHCAuthPortalProps> = ({
                   className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold flex items-center gap-1.5 cursor-pointer"
                 >
                   <LogOut className="w-3.5 h-3.5" />
-                  <span>Logout Session</span>
+                  <span>Logout Demo Session</span>
                 </button>
               )}
             </div>
@@ -390,9 +400,7 @@ export const PHCAuthPortal: React.FC<PHCAuthPortalProps> = ({
     );
   }
 
-  // PHC Login Screen / Protected Action Modal supporting TWO login modes:
-  // 1. DEMO ACCESS — no ID/password required
-  // 2. OFFICER LOGIN — existing Officer ID + Password authentication
+  // Single "MEDRESQ AI Demo Access" Login Modal (with extensible production auth option tucked cleanly below)
   return (
     <div
       id="authorized-access-modal"
@@ -406,22 +414,28 @@ export const PHCAuthPortal: React.FC<PHCAuthPortalProps> = ({
         <div className="px-6 py-4 bg-slate-900 text-white flex items-start justify-between gap-3">
           <div className="flex items-start gap-3">
             <div className="w-10 h-10 rounded-xl bg-teal-600 flex items-center justify-center text-white shrink-0 mt-0.5">
-              <Lock className="w-5 h-5" />
+              <Sparkles className="w-5 h-5" />
             </div>
             <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-[11px] font-mono uppercase tracking-wider text-teal-300 font-extrabold">
-                  MEDRESQ AI · PHC OPERATIONS PORTAL
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="px-2 py-0.5 rounded bg-teal-500/25 border border-teal-400/40 text-teal-200 text-[10px] font-mono font-bold uppercase">
+                  Demo Mode
+                </span>
+                <span className="px-2 py-0.5 rounded bg-amber-400/20 border border-amber-300/40 text-amber-200 text-[10px] font-mono font-bold uppercase">
+                  DEMO ACCOUNT
+                </span>
+                <span className="px-2 py-0.5 rounded bg-amber-400/20 border border-amber-300/40 text-amber-200 text-[10px] font-mono font-bold uppercase">
+                  SYNTHETIC DATA
                 </span>
               </div>
               <h2
                 id="authorized-access-modal-title"
-                className="text-base sm:text-lg font-bold text-white tracking-tight mt-0.5"
+                className="text-base sm:text-lg font-bold text-white tracking-tight mt-1"
               >
-                Authorized access required
+                MEDRESQ AI Demo Access
               </h2>
               <p className="text-xs text-slate-300 mt-0.5 leading-relaxed">
-                This action modifies supply-chain data. Please authenticate to continue.
+                Single synthetic demo account login — select any PHC facility with zero password friction.
               </p>
             </div>
           </div>
@@ -452,77 +466,25 @@ export const PHCAuthPortal: React.FC<PHCAuthPortalProps> = ({
                 <strong className="text-amber-950 truncate block">{pendingActionLabel}</strong>
               </div>
               <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 shrink-0">
-                {selectedPHC.name}
+                {chosenDemoPHC.name}
               </span>
             </div>
           )}
 
-          {/* TWO-MODE SELECTOR: [ DEMO ACCESS ] or [ OFFICER LOGIN ] */}
-          <div className="space-y-1.5">
-            <div
-              role="tablist"
-              aria-label="Select PHC Login Mode"
-              className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-slate-100 border border-slate-200"
-            >
-              <button
-                id="mode-tab-demo-access"
-                type="button"
-                role="tab"
-                aria-selected={loginMode === 'DEMO_ACCESS'}
-                onClick={() => {
-                  setLoginMode('DEMO_ACCESS');
-                  setAuthError(null);
-                  setAuthSuccessMsg(null);
-                }}
-                className={`py-2 px-3 rounded-lg text-xs font-extrabold tracking-wide flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                  loginMode === 'DEMO_ACCESS'
-                    ? 'bg-teal-700 text-white shadow-xs'
-                    : 'text-slate-700 hover:text-slate-900 hover:bg-white/60'
-                }`}
-              >
-                <Sparkles className="w-3.5 h-3.5 shrink-0" />
-                <span>DEMO ACCESS</span>
-              </button>
-
-              <button
-                id="mode-tab-officer-login"
-                type="button"
-                role="tab"
-                aria-selected={loginMode === 'OFFICER_LOGIN'}
-                onClick={() => {
-                  setLoginMode('OFFICER_LOGIN');
-                  setAuthError(null);
-                  setAuthSuccessMsg(null);
-                }}
-                className={`py-2 px-3 rounded-lg text-xs font-extrabold tracking-wide flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                  loginMode === 'OFFICER_LOGIN'
-                    ? 'bg-slate-900 text-white shadow-xs'
-                    : 'text-slate-700 hover:text-slate-900 hover:bg-white/60'
-                }`}
-              >
-                <KeyRound className="w-3.5 h-3.5 shrink-0" />
-                <span>OFFICER LOGIN</span>
-              </button>
-            </div>
-            <p className="text-[11px] text-slate-500 text-center">
-              {loginMode === 'DEMO_ACCESS'
-                ? 'Prototype evaluation mode — no Officer ID or password required.'
-                : 'Assigned PHC Medical Officer In-Charge authentication.'}
-            </p>
-          </div>
-
           {loginMode === 'DEMO_ACCESS' ? (
-            /* ==================================================
-               MODE 1: DEMO ACCESS (No Officer ID / Password Required)
-               ================================================== */
             <div id="demo-access-panel" className="space-y-4">
               <div className="p-4 rounded-xl bg-teal-50/70 border border-teal-200 space-y-3">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-teal-700 text-white text-[10px] font-mono font-bold uppercase tracking-wider">
-                    DEMO ACCOUNT
-                  </span>
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-mono font-bold uppercase tracking-wider">
-                    SYNTHETIC DATA
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-teal-700 text-white text-[10px] font-mono font-bold uppercase tracking-wider">
+                      DEMO ACCOUNT
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-mono font-bold uppercase tracking-wider">
+                      SYNTHETIC DATA
+                    </span>
+                  </div>
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-900 text-teal-200 text-[10px] font-mono font-bold uppercase tracking-wider">
+                    Demo Mode
                   </span>
                 </div>
 
@@ -532,49 +494,59 @@ export const PHCAuthPortal: React.FC<PHCAuthPortalProps> = ({
                   </div>
                   <div className="min-w-0">
                     <div className="text-[11px] font-mono uppercase tracking-wider text-teal-800 font-bold">
-                      Demo Medical Officer
+                      MEDRESQ AI Demo Access · Synthetic Officer Account
                     </div>
                     <div className="text-sm font-extrabold text-slate-900">
-                      Dr. Suresh Chandra Bishnoi
+                      {chosenDemoPHC.medicalOfficerInCharge || 'Dr. Suresh Chandra Bishnoi'}
                     </div>
                     <div className="text-xs text-slate-700 font-medium">
-                      PHC Osian · Jodhpur, Rajasthan
+                      {chosenDemoPHC.name} ({chosenDemoPHC.code}) · {chosenDemoPHC.district}, {chosenDemoPHC.state}
                     </div>
                   </div>
+                </div>
+
+                {/* Select Facility / PHC directly in Demo Login */}
+                <div className="pt-2 border-t border-teal-200/80 space-y-1.5">
+                  <label
+                    htmlFor="demo-login-phc-selector"
+                    className="block text-[10px] font-mono uppercase tracking-wider text-teal-900 font-bold"
+                  >
+                    Select Facility / PHC (Switch Anytime Without Password)
+                  </label>
+                  <select
+                    id="demo-login-phc-selector"
+                    value={chosenDemoPhcId}
+                    onChange={(e) => setChosenDemoPhcId(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-teal-300 bg-white text-slate-900 font-bold text-xs focus:outline-none focus:ring-2 focus:ring-teal-600 cursor-pointer"
+                  >
+                    {facilities.map((fac) => (
+                      <option key={fac.id} value={fac.id}>
+                        {fac.name} ({fac.code}) — {fac.block}, {fac.district}, {fac.state}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2.5 pt-2 border-t border-teal-200/80 text-xs">
                   <div>
                     <span className="text-[10px] font-mono uppercase text-slate-500 block">
-                      Name
-                    </span>
-                    <strong className="text-slate-900">Dr. Suresh Chandra Bishnoi</strong>
-                  </div>
-                  <div>
-                    <span className="text-[10px] font-mono uppercase text-slate-500 block">
-                      Designation
+                      Demo Account Role
                     </span>
                     <strong className="text-slate-900">Medical Officer In-Charge</strong>
                   </div>
                   <div>
                     <span className="text-[10px] font-mono uppercase text-slate-500 block">
-                      PHC
+                      Facility Identity
                     </span>
-                    <strong className="text-teal-900">PHC Osian</strong>
-                  </div>
-                  <div>
-                    <span className="text-[10px] font-mono uppercase text-slate-500 block">
-                      District &amp; State
-                    </span>
-                    <strong className="text-slate-900">Jodhpur, Rajasthan</strong>
+                    <strong className="text-teal-900 font-mono">
+                      {chosenDemoPHC.code} ({defaultOfficerId})
+                    </strong>
                   </div>
                 </div>
               </div>
 
               <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-600 leading-relaxed">
-                <strong>For Demonstration &amp; Prototype Evaluation:</strong> No Officer ID or
-                password is required. Continuing assigns the synthetic Demo Medical Officer session
-                for <strong>PHC Osian</strong> and unlocks interactive features.
+                <strong>Hackathon Demo Mode (Synthetic Data):</strong> Clicking below signs in with the single synthetic demo account. After login, you can switch between any PHC/BSC from the top facility selector without re-entering passwords.
               </div>
 
               {authSuccessMsg && (
@@ -605,32 +577,50 @@ export const PHCAuthPortal: React.FC<PHCAuthPortalProps> = ({
                   id="continue-as-demo-btn"
                   type="button"
                   disabled={isSubmitting}
-                  onClick={handleContinueAsDemo}
+                  onClick={() => void handleContinueAsDemo()}
                   className="flex-1 py-2.5 px-4 rounded-xl bg-teal-700 hover:bg-teal-800 disabled:bg-slate-300 text-white font-extrabold text-xs shadow-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                 >
                   <Sparkles className="w-3.5 h-3.5" />
-                  <span>{isSubmitting ? 'Starting Demo...' : 'CONTINUE AS DEMO'}</span>
+                  <span>
+                    {isSubmitting
+                      ? 'Activating Demo Access...'
+                      : 'MEDRESQ AI Demo Access (1-Click Login)'}
+                  </span>
                 </button>
               </div>
 
-              <div className="pt-2 border-t border-slate-200 text-center">
+              {/* Extensible Production Authentication Hook (kept unobtrusive for future deployment) */}
+              <div className="pt-2 border-t border-slate-100 text-center">
                 <button
                   type="button"
                   onClick={() => {
+                    setShowExtensibleProductionAuth((prev) => !prev);
                     setLoginMode('OFFICER_LOGIN');
                     setAuthError(null);
                   }}
-                  className="text-[11px] font-semibold text-teal-800 hover:text-teal-950 underline cursor-pointer"
+                  className="text-[10px] font-mono text-slate-400 hover:text-slate-600 cursor-pointer"
                 >
-                  Have an Officer ID &amp; Password? Switch to OFFICER LOGIN
+                  Production Deployment Extensibility: Officer Credential Login →
                 </button>
               </div>
             </div>
           ) : (
-            /* ==================================================
-               MODE 2: OFFICER LOGIN (Officer ID + Password)
-               ================================================== */
             <div id="officer-login-panel" className="space-y-4">
+              <div className="flex items-center justify-between bg-slate-100 px-3 py-2 rounded-xl border border-slate-200 text-xs">
+                <span className="font-bold text-slate-700">Officer Credential Login</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLoginMode('DEMO_ACCESS');
+                    setShowExtensibleProductionAuth(false);
+                    setAuthError(null);
+                  }}
+                  className="text-teal-700 hover:text-teal-900 font-bold underline cursor-pointer"
+                >
+                  ← Back to MEDRESQ AI Demo Access
+                </button>
+              </div>
+
               <form onSubmit={handleLoginSubmit} className="space-y-4">
                 <div className="space-y-1.5">
                   <label
@@ -671,7 +661,6 @@ export const PHCAuthPortal: React.FC<PHCAuthPortalProps> = ({
                       name="password"
                       type={showPassword ? 'text' : 'password'}
                       autoComplete="current-password"
-                      autoFocus
                       value={enteredPassword}
                       onChange={(e) => {
                         setEnteredPassword(e.target.value);
@@ -749,60 +738,19 @@ export const PHCAuthPortal: React.FC<PHCAuthPortalProps> = ({
                 </div>
               </form>
 
-              <div className="pt-2 border-t border-slate-200 flex items-center justify-between gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setLoginMode('DEMO_ACCESS');
-                    setAuthError(null);
-                  }}
-                  className="text-[11px] font-semibold text-teal-800 hover:text-teal-950 underline cursor-pointer"
-                >
-                  No password? Switch to DEMO ACCESS
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setShowDemoReference((prev) => !prev)}
-                  className="flex items-center gap-1 text-[11px] font-semibold text-slate-600 hover:text-slate-900 cursor-pointer"
-                >
-                  <KeyRound className="w-3.5 h-3.5 text-amber-600" />
-                  <span>Officer ID Directory</span>
-                  {showDemoReference ? (
-                    <ChevronUp className="w-3.5 h-3.5 text-slate-400" />
-                  ) : (
-                    <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
-                  )}
-                </button>
-              </div>
-
-              {showDemoReference && (
-                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-600 space-y-2">
-                  <p className="leading-relaxed">
-                    Select an assigned Officer ID below. Credentials are validated server-side only;
-                    once authenticated, your session remains unlocked for protected actions.
-                  </p>
-                  <div className="space-y-1.5">
-                    {DEMO_OFFICER_DIRECTORY_PREVIEW.map((item) => (
-                      <button
-                        key={item.officerId}
-                        type="button"
-                        onClick={() => {
-                          setEnteredOfficerId(item.officerId);
-                          setAuthError(null);
-                        }}
-                        className="w-full text-left font-mono text-[11px] text-slate-700 bg-white hover:bg-teal-50/60 p-2 rounded-lg border border-slate-200 hover:border-teal-300 flex items-center justify-between transition-colors cursor-pointer"
-                      >
-                        <span>
-                          <strong className="text-teal-800">{item.officerId}</strong> →{' '}
-                          {item.assignedPhcName}
-                        </span>
-                        <span className="text-[10px] font-sans text-slate-500">
-                          {item.officerName}
-                        </span>
-                      </button>
-                    ))}
+              {onGoogleSignIn && (
+                <div className="pt-3 border-t border-slate-200 space-y-2">
+                  <div className="text-[10px] font-mono uppercase tracking-wider text-slate-400 text-center">
+                    Or Authenticate via Firebase Google SSO
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => void onGoogleSignIn()}
+                    className="w-full py-2.5 px-4 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 font-bold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                  >
+                    <ShieldCheck className="w-4 h-4 text-teal-700" />
+                    <span>Sign in with Google (Firebase Auth)</span>
+                  </button>
                 </div>
               )}
             </div>

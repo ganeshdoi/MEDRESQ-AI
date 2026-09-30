@@ -2,12 +2,12 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Default deny all unknown access
+    // Global Safety Net: Default deny all unknown access
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Common Security Helpers
+    // Hardened Global Security Primitives
     function isSignedIn() {
       return request.auth != null;
     }
@@ -28,96 +28,131 @@ service cloud.firestore {
       return resource.data;
     }
 
-    // Test connection probe
+    // Connection health probe document (/test/connection)
     match /test/{testId} {
-      allow read: if true;
+      allow get: if isValidId(testId);
     }
 
-    // User Profile Rules
+    // 1. User Profile Rules (PII-isolated to document owner)
     function isValidUserProfile(data) {
       return data.keys().hasAll(['id', 'email']) &&
-             data.id is string && data.id.size() <= 128 &&
+             data.keys().hasOnly(['id', 'email', 'displayName', 'photoURL', 'role', 'phcId', 'createdAt']) &&
+             data.id is string && data.id.size() > 0 && data.id.size() <= 128 &&
              data.email is string && data.email.size() <= 256 &&
              (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 128)) &&
+             (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 512)) &&
              (!('role' in data) || (data.role is string && data.role.size() <= 64)) &&
-             (!('phcId' in data) || (data.phcId is string && data.phcId.size() <= 64));
+             (!('phcId' in data) || (data.phcId is string && data.phcId.size() <= 64)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64));
     }
 
     match /users/{userId} {
-      allow get: if isSignedIn();
+      allow get: if isOwner(userId) && isValidId(userId);
       allow list: if isSignedIn() && resource.data.id == request.auth.uid;
       allow create: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming()) && incoming().id == request.auth.uid;
       allow update: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming()) && incoming().id == existing().id;
-      allow delete: if isOwner(userId);
+      allow delete: if isOwner(userId) && isValidId(userId);
     }
 
-    // Logistics Orders Rules
+    // 2. Logistics Orders Rules
     function isValidOrder(data) {
-      return data.keys().hasAll(['id', 'phcId', 'medicineName', 'quantityRequested', 'status']) &&
-             data.id is string && data.id.size() <= 64 &&
-             data.phcId is string && data.phcId.size() <= 64 &&
-             data.medicineName is string && data.medicineName.size() <= 128 &&
+      return data.keys().hasAll(['id', 'phcId', 'medicineName', 'quantityRequested', 'status', 'createdBy']) &&
+             data.keys().hasOnly([
+               'id', 'phcId', 'phcName', 'medicineId', 'medicineName',
+               'quantityRequested', 'quantityDispatched', 'source', 'destination',
+               'status', 'requestDate', 'estimatedDelivery', 'priority',
+               'notes', 'createdBy', 'createdAt'
+             ]) &&
+             data.id is string && data.id.size() > 0 && data.id.size() <= 64 &&
+             data.phcId is string && data.phcId.size() > 0 && data.phcId.size() <= 64 &&
+             data.medicineName is string && data.medicineName.size() > 0 && data.medicineName.size() <= 128 &&
              data.quantityRequested is number && data.quantityRequested >= 0 &&
-             data.status is string && data.status.size() <= 64 &&
+             data.status is string && data.status.size() > 0 && data.status.size() <= 64 &&
+             data.createdBy is string && data.createdBy.size() > 0 && data.createdBy.size() <= 128 &&
+             (!('phcName' in data) || (data.phcName is string && data.phcName.size() <= 128)) &&
+             (!('medicineId' in data) || (data.medicineId is string && data.medicineId.size() <= 64)) &&
+             (!('quantityDispatched' in data) || (data.quantityDispatched is number && data.quantityDispatched >= 0)) &&
+             (!('source' in data) || (data.source is string && data.source.size() <= 128)) &&
+             (!('destination' in data) || (data.destination is string && data.destination.size() <= 128)) &&
+             (!('requestDate' in data) || (data.requestDate is string && data.requestDate.size() <= 32)) &&
+             (!('estimatedDelivery' in data) || (data.estimatedDelivery is string && data.estimatedDelivery.size() <= 64)) &&
              (!('priority' in data) || (data.priority is string && data.priority.size() <= 32)) &&
-             (!('notes' in data) || (data.notes is string && data.notes.size() <= 512));
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 512)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64));
     }
 
     match /orders/{orderId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && isValidId(orderId) && isValidOrder(incoming());
-      allow update: if isSignedIn() && isValidId(orderId) && isValidOrder(incoming());
-      allow delete: if isSignedIn();
+      allow get: if isSignedIn() && isValidId(orderId) && resource.data.createdBy == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.createdBy == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(orderId) && isValidOrder(incoming()) && incoming().createdBy == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(orderId) && isValidOrder(incoming()) && incoming().createdBy == existing().createdBy && existing().createdBy == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(orderId) && resource.data.createdBy == request.auth.uid;
     }
 
-    // Multi-turn Chat Messages Rules
+    // 3. Multi-turn Chat Messages Rules
     function isValidChatMessage(data) {
       return data.keys().hasAll(['id', 'userId', 'role', 'content']) &&
-             data.id is string && data.id.size() <= 64 &&
-             data.userId is string && data.userId.size() <= 128 &&
-             data.role is string && data.role.size() <= 32 &&
-             data.content is string && data.content.size() <= 8192 &&
+             data.keys().hasOnly(['id', 'userId', 'role', 'content', 'modelUsed', 'persona', 'createdAt']) &&
+             data.id is string && data.id.size() > 0 && data.id.size() <= 64 &&
+             data.userId is string && data.userId.size() > 0 && data.userId.size() <= 128 &&
+             data.role is string && data.role.size() > 0 && data.role.size() <= 32 &&
+             data.content is string && data.content.size() > 0 && data.content.size() <= 8192 &&
              (!('modelUsed' in data) || (data.modelUsed is string && data.modelUsed.size() <= 64)) &&
-             (!('persona' in data) || (data.persona is string && data.persona.size() <= 64));
+             (!('persona' in data) || (data.persona is string && data.persona.size() <= 64)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64));
     }
 
     match /chat_messages/{messageId} {
-      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(messageId) && resource.data.userId == request.auth.uid;
       allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
       allow create: if isSignedIn() && isValidId(messageId) && isValidChatMessage(incoming()) && incoming().userId == request.auth.uid;
-      allow update: if isSignedIn() && isValidId(messageId) && isValidChatMessage(incoming()) && incoming().userId == existing().userId;
-      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(messageId) && isValidChatMessage(incoming()) && incoming().userId == existing().userId && existing().userId == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(messageId) && resource.data.userId == request.auth.uid;
     }
 
-    // Voice Logs Rules
+    // 4. Voice Logs Rules
     function isValidVoiceLog(data) {
       return data.keys().hasAll(['id', 'userId', 'transcript']) &&
-             data.id is string && data.id.size() <= 64 &&
-             data.userId is string && data.userId.size() <= 128 &&
-             data.transcript is string && data.transcript.size() <= 4096 &&
+             data.keys().hasOnly(['id', 'userId', 'transcript', 'language', 'locale', 'parsedMedicine', 'parsedQuantity', 'parsedTransaction', 'createdAt']) &&
+             data.id is string && data.id.size() > 0 && data.id.size() <= 64 &&
+             data.userId is string && data.userId.size() > 0 && data.userId.size() <= 128 &&
+             data.transcript is string && data.transcript.size() > 0 && data.transcript.size() <= 4096 &&
+             (!('language' in data) || (data.language is string && data.language.size() <= 32)) &&
+             (!('locale' in data) || (data.locale is string && data.locale.size() <= 32)) &&
              (!('parsedMedicine' in data) || (data.parsedMedicine is string && data.parsedMedicine.size() <= 128)) &&
              (!('parsedQuantity' in data) || (data.parsedQuantity is number)) &&
-             (!('parsedTransaction' in data) || (data.parsedTransaction is string && data.parsedTransaction.size() <= 64));
+             (!('parsedTransaction' in data) || (data.parsedTransaction is string && data.parsedTransaction.size() <= 64)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64));
     }
 
     match /voice_logs/{logId} {
-      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(logId) && resource.data.userId == request.auth.uid;
       allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
       allow create: if isSignedIn() && isValidId(logId) && isValidVoiceLog(incoming()) && incoming().userId == request.auth.uid;
-      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(logId) && isValidVoiceLog(incoming()) && incoming().userId == existing().userId && existing().userId == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(logId) && resource.data.userId == request.auth.uid;
     }
 
-    // Offline Sync Audit Records
+    // 5. Offline Sync Audit Records
     function isValidSyncAudit(data) {
-      return data.keys().hasAll(['id', 'status']) &&
-             data.id is string && data.id.size() <= 128 &&
-             data.status is string && data.status.size() <= 64;
+      return data.keys().hasAll(['id', 'status', 'syncedBy']) &&
+             data.keys().hasOnly(['id', 'module', 'action', 'entityName', 'facilityId', 'status', 'syncedAt', 'syncedBy']) &&
+             data.id is string && data.id.size() > 0 && data.id.size() <= 128 &&
+             data.status is string && data.status.size() > 0 && data.status.size() <= 64 &&
+             data.syncedBy is string && data.syncedBy.size() > 0 && data.syncedBy.size() <= 128 &&
+             (!('module' in data) || (data.module is string && data.module.size() <= 64)) &&
+             (!('action' in data) || (data.action is string && data.action.size() <= 64)) &&
+             (!('entityName' in data) || (data.entityName is string && data.entityName.size() <= 256)) &&
+             (!('facilityId' in data) || (data.facilityId is string && data.facilityId.size() <= 64)) &&
+             (!('syncedAt' in data) || (data.syncedAt is string && data.syncedAt.size() <= 64));
     }
 
     match /offline_sync_audit/{auditId} {
-      allow read: if isSignedIn();
-      allow create, update: if isSignedIn() && isValidId(auditId) && isValidSyncAudit(incoming());
-      allow delete: if isSignedIn();
+      allow get: if isSignedIn() && isValidId(auditId) && resource.data.syncedBy == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.syncedBy == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(auditId) && isValidSyncAudit(incoming()) && incoming().syncedBy == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(auditId) && isValidSyncAudit(incoming()) && incoming().syncedBy == existing().syncedBy && existing().syncedBy == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(auditId) && resource.data.syncedBy == request.auth.uid;
     }
   }
 }

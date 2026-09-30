@@ -55,6 +55,7 @@ import {
 import { buildRegionalWeatherPreparedness } from '../utils/regionalDemandProfile.ts';
 import {
   AuthenticatedInchargeSession,
+  getOfficerIdForPHC,
   loadSavedInchargeSession,
   saveInchargeSession
 } from '../utils/phcAuthDirectory.ts';
@@ -153,15 +154,18 @@ interface AppContextType {
   requireAuthorizedAccess: (action: () => void | Promise<any>, actionLabel?: string) => boolean;
 
   // AI & Chat
-  chatMessages: AIChatMessage[];
-  isChatLoading: boolean;
-  assistantError: string | null;
-  clearAssistantError: () => void;
   isGeminiAssistantOpen: boolean;
   setIsGeminiAssistantOpen: (open: boolean) => void;
-  openGeminiAssistant: (initialPrompt?: string) => void;
-  toggleGeminiAssistant: () => void;
-  sendChatMessage: (content: string, persona?: string, taskComplexity?: string, pageContextOverride?: string) => Promise<void>;
+  assistantError: string | null;
+  clearAssistantError: () => void;
+  chatMessages: AIChatMessage[];
+  isChatLoading: boolean;
+  sendChatMessage: (
+    content: string,
+    persona?: string,
+    taskComplexity?: string,
+    pageContext?: string
+  ) => Promise<void>;
   clearChatHistory: () => void;
 
   // Audio Transcription with language-aware Gemini Audio ASR (en-IN, hi-IN, ta-IN, te-IN)
@@ -445,14 +449,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
 
-  // Chat & Gemini Assistant Drawer state
+  // Chat state
   const [chatMessages, setChatMessages] = useState<AIChatMessage[]>(INITIAL_CHAT_MESSAGES);
   const [isChatLoading, setIsChatLoading] = useState<boolean>(false);
-  const [assistantError, setAssistantError] = useState<string | null>(null);
-  const [isGeminiAssistantOpen, setIsGeminiAssistantOpen] = useState<boolean>(false);
-
-  const clearAssistantError = () => setAssistantError(null);
-  const toggleGeminiAssistant = () => setIsGeminiAssistantOpen((prev) => !prev);
 
   // Audio transcription state
   const [isTranscribing, setIsTranscribing] = useState<boolean>(false);
@@ -595,7 +594,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
   const [authModalTab, setAuthModalTab] = useState<
     'demo' | 'officer' | 'signin' | 'signup' | 'directory'
-  >('signin');
+  >('demo');
   const [pendingPHCToUnlock, setPendingPHCToUnlock] = useState<PHCFacility | null>(null);
 
   const requireAuthorizedAccess = (
@@ -608,7 +607,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     pendingProtectedActionRef.current = action;
     setPendingActionLabel(actionLabel);
-    setAuthModalTab('signin');
+    setAuthModalTab('demo');
     setIsAuthModalOpen(true);
     return false;
   };
@@ -648,22 +647,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const setSelectedPHC = (phc: PHCFacility, _bypassPassword?: boolean) => {
-    if (inchargeSession) {
-      const boundPhcId = inchargeSession.assignedPhcId || inchargeSession.phcId;
-      if (phc.id !== boundPhcId) {
-        notify(
-          `Facility Access Restricted: Officer ${inchargeSession.officerId} is strictly bound to ${
-            inchargeSession.assignedPhcName || inchargeSession.phcName
-          }. Sign out to authenticate into another PHC.`
-        );
-        return;
+    if (inchargeSessionRef.current) {
+      const currentSession = inchargeSessionRef.current;
+      const isDemo = Boolean(
+        currentSession.isDemoAccount || currentSession.loginMode === 'DEMO_ACCESS' || _bypassPassword
+      );
+      if (isDemo) {
+        const updatedDemoSession: AuthenticatedInchargeSession = {
+          ...currentSession,
+          officerId: getOfficerIdForPHC(phc),
+          officerName: phc.medicalOfficerInCharge || currentSession.officerName,
+          inchargeName: phc.medicalOfficerInCharge || currentSession.inchargeName,
+          assignedPhcId: phc.id,
+          assignedPhcName: phc.name,
+          phcId: phc.id,
+          phcName: phc.name,
+          phcCode: phc.code,
+          district: phc.district,
+          block: phc.block,
+          state: phc.state,
+          unlockedPhcIds: facilities.map((f) => f.id),
+          loginMode: 'DEMO_ACCESS',
+          isDemoAccount: true
+        };
+        inchargeSessionRef.current = updatedDemoSession;
+        setInchargeSession(updatedDemoSession);
+        saveInchargeSession(updatedDemoSession, updatedDemoSession.rememberDevice);
+      } else {
+        const boundPhcId = currentSession.assignedPhcId || currentSession.phcId;
+        if (phc.id !== boundPhcId) {
+          notify(
+            `Facility Access Restricted: Officer ${currentSession.officerId} is strictly bound to ${
+              currentSession.assignedPhcName || currentSession.phcName
+            }. Switch to Demo Access or sign out to select another PHC.`
+          );
+          return;
+        }
       }
     }
     applySelectedPHCInternal(phc);
   };
 
   const openAuthModal = (
-    tab: 'demo' | 'officer' | 'signin' | 'signup' | 'directory' = 'signin',
+    tab: 'demo' | 'officer' | 'signin' | 'signup' | 'directory' = 'demo',
     targetPHC: PHCFacility | null = null
   ) => {
     setAuthModalTab(tab);
@@ -682,13 +708,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     session: AuthenticatedInchargeSession,
     chosenPHC: PHCFacility
   ) => {
+    const isDemo = Boolean(session.isDemoAccount || session.loginMode === 'DEMO_ACCESS');
     const boundSession: AuthenticatedInchargeSession = {
       ...session,
+      officerId: isDemo ? getOfficerIdForPHC(chosenPHC) : session.officerId,
+      officerName: isDemo
+        ? chosenPHC.medicalOfficerInCharge || session.officerName
+        : session.officerName,
+      inchargeName: isDemo
+        ? chosenPHC.medicalOfficerInCharge || session.inchargeName
+        : session.inchargeName,
       assignedPhcId: chosenPHC.id,
       assignedPhcName: chosenPHC.name,
       phcId: chosenPHC.id,
       phcName: chosenPHC.name,
-      unlockedPhcIds: [chosenPHC.id],
+      phcCode: chosenPHC.code,
+      district: chosenPHC.district,
+      block: chosenPHC.block,
+      state: chosenPHC.state,
+      unlockedPhcIds: isDemo ? facilities.map((f) => f.id) : [chosenPHC.id],
       authenticationStatus: 'AUTHENTICATED'
     };
     inchargeSessionRef.current = boundSession;
@@ -780,9 +818,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {}
   }, [attendanceByPhc]);
 
-  const activeAttendancePhc = inchargeSession
-    ? facilities.find((f) => f.id === (inchargeSession.assignedPhcId || inchargeSession.phcId)) || selectedPHC
-    : selectedPHC;
+  const activeAttendancePhc =
+    inchargeSession && !inchargeSession.isDemoAccount && inchargeSession.loginMode !== 'DEMO_ACCESS'
+      ? facilities.find((f) => f.id === (inchargeSession.assignedPhcId || inchargeSession.phcId)) || selectedPHC
+      : selectedPHC;
 
   // Ensure staff directory and initial attendance records exist for the active PHC and sync from server when online
   useEffect(() => {
@@ -1978,14 +2017,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // Multi-turn Gemini Chatbot & Top-Right Gemini Operational Assistant
+  // Multi-turn Gemini Chatbot
+  const [isGeminiAssistantOpen, setIsGeminiAssistantOpen] = useState<boolean>(false);
+  const [assistantError, setAssistantError] = useState<string | null>(null);
+  const clearAssistantError = () => setAssistantError(null);
+
   const sendChatMessage = async (
     content: string,
     persona: string = 'clinical_officer',
     taskComplexity: string = 'general',
-    pageContextOverride?: string
+    pageContext?: string
   ) => {
     if (!content.trim()) return;
+    setAssistantError(null);
 
     const userMessage: AIChatMessage = {
       id: `user-${Date.now()}`,
@@ -1999,16 +2043,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const updatedMessages = [...chatMessages, userMessage];
     setChatMessages(updatedMessages);
     setIsChatLoading(true);
-    setAssistantError(null);
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
 
     try {
-      if (isOfflineMode) {
-        throw new Error('OFFLINE_MODE');
-      }
-
       // Save user message to Firestore if authenticated
       if (currentUser) {
         try {
@@ -2025,31 +2061,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       }
 
-      // Keep recent conversation window to avoid sending bulky payloads
-      const apiMessages = updatedMessages.slice(-12).map((m) => ({
+      // Format for server API
+      const apiMessages = updatedMessages.map((m, idx) => ({
         role: m.role,
-        text: m.content
+        text:
+          idx === updatedMessages.length - 1 && pageContext
+            ? `${m.content}\n\n[Active PHC Operational Context: ${pageContext}]`
+            : m.content
       }));
-
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (inchargeSessionRef.current?.sessionToken) {
-        headers.Authorization = `Bearer ${inchargeSessionRef.current.sessionToken}`;
-      }
 
       const res = await fetch('/api/chat', {
         method: 'POST',
-        headers,
-        signal: controller.signal,
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: apiMessages,
           persona,
           taskComplexity,
-          phcId: selectedPHC.id,
-          phcName: selectedPHC.name,
+          pageContext,
           language,
-          activeModule,
-          role,
-          pageContext: pageContextOverride || `Active Module: ${activeModule} (${selectedPHC.name})`
+          phcId: selectedPHC.id
         })
       });
 
@@ -2058,21 +2088,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       const data = await res.json();
-      const replyText = typeof data?.reply === 'string' ? data.reply.trim() : '';
-      if (!replyText) {
-        throw new Error('Empty response from Gemini Assistant');
-      }
-
       const modelMessage: AIChatMessage = {
         id: `model-${Date.now()}`,
         role: 'model',
-        content: replyText,
-        modelUsed: data.modelUsed || 'gemini-3-flash-preview',
+        content: data.reply || 'No response available.',
+        modelUsed: data.modelUsed || 'gemini-3.8-flash',
         persona,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
 
-      setChatMessages((prev) => [...prev, modelMessage]);
+      setChatMessages(prev => [...prev, modelMessage]);
 
       // Save model reply to Firestore if authenticated
       if (currentUser) {
@@ -2092,33 +2117,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     } catch (error) {
       console.error('Chat error:', error);
-      const unavailableMsg = 'Gemini is temporarily unavailable. Please try again.';
-      setAssistantError(unavailableMsg);
       const errorMessage: AIChatMessage = {
         id: `error-${Date.now()}`,
         role: 'model',
-        content: unavailableMsg,
-        modelUsed: 'gemini-unavailable',
+        content: 'System notice: Connection to Gemini service timed out. Please check your network or try again.',
+        modelUsed: 'system-offline-fallback',
         persona,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
-      setChatMessages((prev) => [...prev, errorMessage]);
+      setChatMessages(prev => [...prev, errorMessage]);
     } finally {
-      clearTimeout(timeoutId);
       setIsChatLoading(false);
-    }
-  };
-
-  const openGeminiAssistant = (initialPrompt?: string) => {
-    setIsGeminiAssistantOpen(true);
-    if (initialPrompt && initialPrompt.trim()) {
-      void sendChatMessage(initialPrompt.trim(), 'clinical_officer', 'general');
     }
   };
 
   const clearChatHistory = () => {
     setChatMessages(INITIAL_CHAT_MESSAGES);
-    setAssistantError(null);
     notify('Chat history cleared.');
   };
 
@@ -3874,15 +3888,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         signOutIncharge,
         requireAuthorizedAccess,
 
-        // Chat & Gemini AI Assistant
-        chatMessages,
-        isChatLoading,
-        assistantError,
-        clearAssistantError,
+        // Chat
         isGeminiAssistantOpen,
         setIsGeminiAssistantOpen,
-        openGeminiAssistant,
-        toggleGeminiAssistant,
+        assistantError,
+        clearAssistantError,
+        chatMessages,
+        isChatLoading,
         sendChatMessage,
         clearChatHistory,
 

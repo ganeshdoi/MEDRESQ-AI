@@ -417,22 +417,33 @@ export const OfflineQueueViewer: React.FC = () => {
         })()}
       </div>
 
-      {/* Storage Metrics Cards */}
+      {/* Storage Metrics & 6-State Status Legend Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs">
           <div className="flex items-center justify-between text-slate-500">
-            <span className="text-[10px] font-bold uppercase tracking-wider">Pending Records</span>
+            <span className="text-[10px] font-bold uppercase tracking-wider">PENDING</span>
             <Clock className="w-4 h-4 text-amber-600" />
           </div>
           <div className="text-2xl font-bold font-mono text-amber-700 mt-1">
             {pendingItems.length}
           </div>
-          <span className="text-[11px] text-slate-500 font-medium">Waiting to commit</span>
+          <span className="text-[11px] text-slate-500 font-medium">Buffered locally</span>
         </div>
 
         <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs">
           <div className="flex items-center justify-between text-slate-500">
-            <span className="text-[10px] font-bold uppercase tracking-wider">Synced Records</span>
+            <span className="text-[10px] font-bold uppercase tracking-wider">FAILED / RETRY</span>
+            <ShieldAlert className="w-4 h-4 text-rose-600" />
+          </div>
+          <div className="text-2xl font-bold font-mono text-rose-700 mt-1">
+            {failedRetryItems.length}
+          </div>
+          <span className="text-[11px] text-slate-500 font-medium">Awaiting retry / recovery</span>
+        </div>
+
+        <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs">
+          <div className="flex items-center justify-between text-slate-500">
+            <span className="text-[10px] font-bold uppercase tracking-wider">SYNCED</span>
             <CheckCircle2 className="w-4 h-4 text-emerald-600" />
           </div>
           <div className="text-2xl font-bold font-mono text-emerald-700 mt-1">
@@ -453,18 +464,51 @@ export const OfflineQueueViewer: React.FC = () => {
             localStorage key
           </span>
         </div>
-
-        <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs">
-          <div className="flex items-center justify-between text-slate-500">
-            <span className="text-[10px] font-bold uppercase tracking-wider">Target Node</span>
-            <Database className="w-4 h-4 text-blue-600" />
-          </div>
-          <div className="text-sm font-bold font-mono text-blue-800 mt-2 truncate" title="RMSCL e-Aushadhi / Firebase">
-            e-Aushadhi / Cloud
-          </div>
-          <span className="text-[11px] text-slate-500 font-medium">Auto-retry on reconnect</span>
-        </div>
       </div>
+
+      {/* Explicit Failed Records Explanation & Recovery Action Banner (Requirement 8) */}
+      {failedRetryItems.length > 0 && (
+        <div
+          role="alert"
+          className="p-4 rounded-xl bg-rose-50 border border-rose-300 text-rose-950 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs"
+        >
+          <div className="flex items-start gap-3">
+            <ShieldAlert className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-mono text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-rose-200 text-rose-900">
+                  FAILED / RETRY ({failedRetryItems.length})
+                </span>
+                <span className="font-bold text-sm">
+                  {failedRetryItems.length} Offline Record(s) Encountered a Synchronization Error
+                </span>
+              </div>
+              <p className="text-xs text-rose-900 mt-1">
+                No data has been lost — failed records are preserved in browser storage. You can trigger an immediate retry with exponential backoff or export a recovery JSON/CSV backup below.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => void syncOfflineQueue()}
+              disabled={isQueueSyncing}
+              className="px-3.5 py-2 rounded-lg bg-rose-700 hover:bg-rose-800 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isQueueSyncing ? 'animate-spin' : ''}`} />
+              <span>{isQueueSyncing ? 'Retrying...' : 'Retry All Failed Now'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleExportRecords('JSON', 'PENDING_ONLY')}
+              className="px-3 py-2 rounded-lg bg-white hover:bg-rose-100 text-rose-900 border border-rose-300 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Export Recovery JSON</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Manual Data Recovery & Export Panel for Pending Offline Records */}
       <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-3.5">

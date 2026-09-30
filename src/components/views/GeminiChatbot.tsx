@@ -364,7 +364,7 @@ export const GeminiChatbot: React.FC = () => {
 
           {/* Loading bubble */}
           {isChatLoading && (
-            <div className="flex gap-3 max-w-md mr-auto animate-in fade-in">
+            <div className="flex gap-3 max-w-md mr-auto animate-in fade-in duration-150">
               <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
                 <Sparkles className="w-4 h-4 animate-spin" />
               </div>
@@ -372,7 +372,7 @@ export const GeminiChatbot: React.FC = () => {
                 <span className="w-2 h-2 rounded-full bg-emerald-600 animate-bounce"></span>
                 <span className="w-2 h-2 rounded-full bg-emerald-600 animate-bounce [animation-delay:0.2s]"></span>
                 <span className="w-2 h-2 rounded-full bg-emerald-600 animate-bounce [animation-delay:0.4s]"></span>
-                <span className="text-slate-500 ml-1">Analyzing operational guidelines via {activePersona.model}...</span>
+                <span className="text-slate-600 font-medium ml-1">Gemini is analyzing PHC context…</span>
               </div>
             </div>
           )}

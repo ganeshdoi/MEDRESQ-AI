@@ -257,7 +257,8 @@ export const RecordsDataCapture: React.FC = () => {
     isOfflineMode,
     transcribeAudio,
     isTranscribing,
-    language: appLanguage
+    language: appLanguage,
+    setLanguage
   } = useApp();
 
   const activeMedicalOfficerName =
@@ -662,11 +663,13 @@ export const RecordsDataCapture: React.FC = () => {
                 imageBase64: imgBase64,
                 mimeType: imgMime,
                 fileName: imgName,
-                phcId: selectedPHC.id
+                phcId: selectedPHC.id,
+                language: appLanguage
               }
             : {
                 presetId: activePresetId,
-                phcId: selectedPHC.id
+                phcId: selectedPHC.id,
+                language: appLanguage
               }
         )
       });
@@ -1667,13 +1670,14 @@ export const RecordsDataCapture: React.FC = () => {
               </div>
               <p className="text-xs text-slate-600 mt-0.5">
                 Supports <strong>English (en-IN)</strong>, <strong>हिन्दी (hi-IN)</strong>,{' '}
-                <strong>தமிழ் (ta-IN)</strong>, and <strong>తెలుగు (te-IN)</strong> via hybrid browser SpeechRecognition + Gemini AI Audio Transcription fallback.
+                <strong>ਪੰਜਾਬੀ (pa-IN)</strong>, <strong>தமிழ் (ta-IN)</strong>,{' '}
+                <strong>తెలుగు (te-IN)</strong>, and <strong>മലയാളം (ml-IN)</strong> via hybrid browser SpeechRecognition + Gemini AI Audio Transcription fallback.
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            {/* 4-Language Voice Recognition Selector (en-IN, hi-IN, ta-IN, te-IN) */}
+            {/* 6-Language Voice Recognition Selector (en-IN, hi-IN, pa-IN, ta-IN, te-IN, ml-IN) */}
             <div className="flex items-center gap-1.5 text-xs">
               <Languages className="w-3.5 h-3.5 text-emerald-700" />
               <label htmlFor="register-voice-lang-select" className="text-[11px] font-bold text-slate-600">
@@ -1686,6 +1690,7 @@ export const RecordsDataCapture: React.FC = () => {
                   const nextLocale = e.target.value as RegisterVoiceBcp47Locale;
                   const nextCfg = resolveVoiceLanguageConfig(nextLocale);
                   setVoiceLanguage(nextCfg.locale);
+                  setLanguage(nextCfg.code);
                   setVoiceCommandText(nextCfg.sampleCommands[0].transcript);
                   setVoiceErrorBanner(null);
                   setVoiceListeningStatus('IDLE');
@@ -1694,8 +1699,10 @@ export const RecordsDataCapture: React.FC = () => {
               >
                 <option value="en-IN">English — en-IN</option>
                 <option value="hi-IN">हिन्दी (Hindi) — hi-IN</option>
+                <option value="pa-IN">ਪੰਜਾਬੀ (Punjabi) — pa-IN</option>
                 <option value="ta-IN">தமிழ் (Tamil) — ta-IN</option>
                 <option value="te-IN">తెలుగు (Telugu) — te-IN</option>
+                <option value="ml-IN">മലയാളം (Malayalam) — ml-IN</option>
               </select>
             </div>
 

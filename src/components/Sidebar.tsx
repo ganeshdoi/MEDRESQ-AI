@@ -15,7 +15,8 @@ import {
   LogOut,
   ShieldCheck,
   UserPlus,
-  Users
+  Users,
+  Sparkles
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.tsx';
 import { getPHCInchargeCredential } from '../utils/phcAuthDirectory.ts';
@@ -52,6 +53,7 @@ export const Sidebar: React.FC = () => {
     signOutIncharge,
     showNotification,
     staff,
+    setIsGeminiAssistantOpen,
     t
   } = useApp();
 
@@ -174,10 +176,10 @@ export const Sidebar: React.FC = () => {
             </div>
             <div className="min-w-0">
               <span className="font-extrabold text-white tracking-tight text-sm block leading-none">
-                MEDRESQ PORTAL
+                MEDRESQ AI
               </span>
-              <span className="text-[11px] text-teal-300 font-medium truncate block mt-1 leading-none">
-                {selectedPHC.name}
+              <span className="text-[10px] text-teal-300 font-semibold truncate block mt-1 leading-none">
+                Smart Health • Smart Supply Chain
               </span>
             </div>
           </button>
@@ -257,7 +259,19 @@ export const Sidebar: React.FC = () => {
         </nav>
 
         {/* Active PHC In-Charge Officer Session / Public Demo Mode Footer Card */}
-        <div className="p-3 border-t border-white/10 bg-slate-950/60 space-y-2.5 shrink-0">
+        <div className="p-3 border-t border-white/10 bg-slate-950/60 space-y-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              setIsGeminiAssistantOpen(true);
+              setMobileSidebarOpen(false);
+            }}
+            className="w-full py-2 px-3 rounded-xl bg-linear-to-r from-indigo-600/90 via-teal-600/90 to-emerald-600/90 hover:from-indigo-600 hover:via-teal-600 hover:to-emerald-600 border border-teal-400/30 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs transition-all cursor-pointer"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-teal-200 animate-pulse" />
+            <span>Ask Gemini AI Assistant</span>
+          </button>
+
           <div className="p-2.5 rounded-xl bg-white/5 border border-white/10 space-y-1.5">
             <div className="flex items-center justify-between gap-1.5">
               {inchargeSession ? (

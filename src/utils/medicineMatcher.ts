@@ -72,6 +72,15 @@ function tokenize(text: string): string[] {
     .filter((t) => t.length >= 2);
 }
 
+const LEGACY_MEDICINE_ID_TO_NLEM_PREFIX: Record<string, string> = {
+  'med-1': 'med-nlem-fl-01-',
+  'med-2': 'med-nlem-ana-01-',
+  'med-3': 'med-nlem-fl-02-',
+  'med-4': 'med-nlem-fl-03-',
+  'med-5': 'med-nlem-ant-01-',
+  'med-6': 'med-nlem-abx-01-'
+};
+
 /**
  * Deterministically resolves a medicine name or explicit medicineId to a single MedicineItem
  * in the facility's inventory. Rejects unmatched or ambiguous medicine queries.
@@ -88,19 +97,44 @@ export function resolveMedicineMatch(
     };
   }
 
+  const cleanExplicitId = explicitMedicineId ? explicitMedicineId.trim() : '';
+  const query = String(rawName || '').toLowerCase().trim();
+
   // 1. Explicit ID match if provided
-  if (explicitMedicineId && explicitMedicineId.trim()) {
-    const byId = facilityMeds.find((m) => m.id === explicitMedicineId.trim());
+  if (cleanExplicitId) {
+    const byId = facilityMeds.find((m) => m.id === cleanExplicitId);
     if (byId) {
       return { status: 'MATCHED', medicine: byId };
     }
-    return {
-      status: 'UNMATCHED',
-      reason: `Medicine ID "${explicitMedicineId}" was not found in facility inventory.`
-    };
+
+    // Check canonical NLEM prefix across PHC IDs (e.g. med-nlem-ana-01-phc-osian)
+    const nlemPrefixMatch = /^(med-nlem-[a-z0-9]+-\d+-)/i.exec(cleanExplicitId);
+    if (nlemPrefixMatch) {
+      const prefix = nlemPrefixMatch[1].toLowerCase();
+      const byPrefix = facilityMeds.find((m) => m.id.toLowerCase().startsWith(prefix));
+      if (byPrefix) {
+        return { status: 'MATCHED', medicine: byPrefix };
+      }
+    }
+
+    // If rawName is not provided, check legacy ID mapping or return clear validation error
+    if (!query) {
+      const legacyPrefix = LEGACY_MEDICINE_ID_TO_NLEM_PREFIX[cleanExplicitId.toLowerCase()];
+      if (legacyPrefix) {
+        const byLegacy = facilityMeds.find((m) => m.id.toLowerCase().startsWith(legacyPrefix));
+        if (byLegacy) {
+          return { status: 'MATCHED', medicine: byLegacy };
+        }
+      }
+      return {
+        status: 'UNMATCHED',
+        reason: `Validation error: Medicine ID "${cleanExplicitId}" was not found in facility inventory.`
+      };
+    }
+    // When rawName IS provided alongside an unrecognized/legacy explicitMedicineId (e.g. "med-2" with "Paracetamol 500mg Tablets"),
+    // fall through to deterministic name/formulation resolution against facilityMeds.
   }
 
-  const query = String(rawName || '').toLowerCase().trim();
   if (!query) {
     return {
       status: 'UNMATCHED',
@@ -212,7 +246,9 @@ export function resolveMedicineMatch(
   if (scoredCandidates.length === 0) {
     return {
       status: 'UNMATCHED',
-      reason: `Unrecognized medicine "${rawName}" does not match any item in facility inventory.`
+      reason: cleanExplicitId
+        ? `Validation error: Medicine ID "${cleanExplicitId}" (${rawName}) does not match any item in facility inventory.`
+        : `Unrecognized medicine "${rawName}" does not match any item in facility inventory.`
     };
   }
 

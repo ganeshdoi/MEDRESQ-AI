@@ -1,8 +1,8 @@
 import type { MedicineItem } from '../types.ts';
 import { resolveMedicineMatch } from './medicineMatcher.ts';
 
-export type RegisterVoiceLanguageCode = 'en' | 'hi' | 'ta' | 'te';
-export type RegisterVoiceBcp47Locale = 'en-IN' | 'hi-IN' | 'ta-IN' | 'te-IN';
+export type RegisterVoiceLanguageCode = 'en' | 'hi' | 'pa' | 'ta' | 'te' | 'ml';
+export type RegisterVoiceBcp47Locale = 'en-IN' | 'hi-IN' | 'pa-IN' | 'ta-IN' | 'te-IN' | 'ml-IN';
 
 export type RegisterVoiceActionType =
   | 'ADD'
@@ -16,7 +16,7 @@ export type RegisterVoiceActionType =
 
 export interface VoiceLanguageConfig {
   code: RegisterVoiceLanguageCode;
-  legacyKey: 'english' | 'hindi' | 'tamil' | 'telugu';
+  legacyKey: 'english' | 'hindi' | 'punjabi' | 'tamil' | 'telugu' | 'malayalam';
   locale: RegisterVoiceBcp47Locale;
   label: string;
   nativeLabel: string;
@@ -109,6 +109,46 @@ export const REGISTER_VOICE_LANGUAGES: Record<RegisterVoiceLanguageCode, VoiceLa
       }
     ]
   },
+  pa: {
+    code: 'pa',
+    legacyKey: 'punjabi',
+    locale: 'pa-IN',
+    label: 'Punjabi (ਪੰਜਾਬੀ)',
+    nativeLabel: 'ਪੰਜਾਬੀ',
+    scriptName: 'Gurmukhi',
+    sampleCommands: [
+      {
+        actionLabel: 'ਜੋੜੋ (Add +)',
+        transcript: 'ਪੈਰਾਸੀਟਾਮੋਲ 20 ਜੋੜੋ',
+        translation: 'Add 20 units of Paracetamol 500mg to register'
+      },
+      {
+        actionLabel: 'ਘਟਾਓ (Dispense -)',
+        transcript: 'ORS 10 ਘਟਾਓ',
+        translation: 'Dispense 10 sachets of ORS from stock'
+      },
+      {
+        actionLabel: 'ਅਪਡੇਟ ਕਰੋ (Update)',
+        transcript: 'ਅਮੋਕਸੀਸਿਲਿਨ 50 ਅਪਡੇਟ ਕਰੋ',
+        translation: 'Update Amoxicillin 500mg register quantity to 50'
+      },
+      {
+        actionLabel: 'ਖੋਜੋ (Search)',
+        transcript: 'ORS da stock kina hai?',
+        translation: 'Check ORS stock in physical register'
+      },
+      {
+        actionLabel: 'ਤਸਦੀਕ ਕਰੋ (Verify)',
+        transcript: 'ਐਂਟਰੀ ਵੈਰੀਫਾਈ ਕਰੋ',
+        translation: 'Verify pending register entry'
+      },
+      {
+        actionLabel: 'ਸੇਵ ਕਰੋ (Save)',
+        transcript: 'ਰਜਿਸਟਰ ਸੇਵ ਕਰੋ',
+        translation: 'Save & commit physical register entries'
+      }
+    ]
+  },
   ta: {
     code: 'ta',
     legacyKey: 'tamil',
@@ -188,6 +228,46 @@ export const REGISTER_VOICE_LANGUAGES: Record<RegisterVoiceLanguageCode, VoiceLa
         translation: 'Save & commit physical register entries'
       }
     ]
+  },
+  ml: {
+    code: 'ml',
+    legacyKey: 'malayalam',
+    locale: 'ml-IN',
+    label: 'Malayalam (മലയാളം)',
+    nativeLabel: 'മലയാളം',
+    scriptName: 'Malayalam',
+    sampleCommands: [
+      {
+        actionLabel: 'ചേർക്കുക (Add +)',
+        transcript: 'പാരസെറ്റമോൾ 20 ചേർക്കുക',
+        translation: 'Add 20 units of Paracetamol 500mg to register'
+      },
+      {
+        actionLabel: 'കുറയ്ക്കുക (Dispense -)',
+        transcript: 'ORS 10 കുറയ്ക്കുക',
+        translation: 'Dispense 10 sachets of ORS from stock'
+      },
+      {
+        actionLabel: 'അപ്ഡേറ്റ് (Update)',
+        transcript: 'അമോക്സിസിലിൻ 50 അപ്ഡേറ്റ് ചെയ്യുക',
+        translation: 'Update Amoxicillin 500mg register quantity to 50'
+      },
+      {
+        actionLabel: 'തിരയുക (Search)',
+        transcript: 'ORS stock ethra undu?',
+        translation: 'Search ORS stock in physical register'
+      },
+      {
+        actionLabel: 'പരിശോധിക്കുക (Verify)',
+        transcript: 'എൻട്രി വെരിഫൈ ചെയ്യുക',
+        translation: 'Verify pending register entry'
+      },
+      {
+        actionLabel: 'സേവ് ചെയ്യുക (Save)',
+        transcript: 'രജിസ്റ്റർ സേവ് ചെയ്യുക',
+        translation: 'Save & commit physical register entries'
+      }
+    ]
   }
 };
 
@@ -227,11 +307,17 @@ export function resolveVoiceLanguageConfig(input?: string | null): VoiceLanguage
   if (clean === 'hi' || clean === 'hi-in' || clean === 'hindi' || clean === 'hinglish') {
     return REGISTER_VOICE_LANGUAGES.hi;
   }
+  if (clean === 'pa' || clean === 'pa-in' || clean === 'punjabi') {
+    return REGISTER_VOICE_LANGUAGES.pa;
+  }
   if (clean === 'ta' || clean === 'ta-in' || clean === 'tamil') {
     return REGISTER_VOICE_LANGUAGES.ta;
   }
   if (clean === 'te' || clean === 'te-in' || clean === 'telugu') {
     return REGISTER_VOICE_LANGUAGES.te;
+  }
+  if (clean === 'ml' || clean === 'ml-in' || clean === 'malayalam') {
+    return REGISTER_VOICE_LANGUAGES.ml;
   }
   if (clean === 'en' || clean === 'en-in' || clean === 'english') {
     return REGISTER_VOICE_LANGUAGES.en;
@@ -241,7 +327,7 @@ export function resolveVoiceLanguageConfig(input?: string | null): VoiceLanguage
 
 /**
  * Maps any UI language code or locale string to its canonical BCP-47 voice parameter:
- * 'en-IN' | 'hi-IN' | 'ta-IN' | 'te-IN'
+ * 'en-IN' | 'hi-IN' | 'pa-IN' | 'ta-IN' | 'te-IN' | 'ml-IN'
  */
 export function getVoiceBcp47Locale(input?: string | null): RegisterVoiceBcp47Locale {
   return resolveVoiceLanguageConfig(input).locale;
@@ -252,19 +338,23 @@ export function getVoiceBcp47Locale(input?: string | null): RegisterVoiceBcp47Lo
  */
 export function detectScriptLanguage(text: string): RegisterVoiceLanguageCode | null {
   if (/[\u0900-\u097F]/.test(text)) return 'hi'; // Devanagari
+  if (/[\u0A00-\u0A7F]/.test(text)) return 'pa'; // Gurmukhi (Punjabi)
   if (/[\u0B80-\u0BFF]/.test(text)) return 'ta'; // Tamil
   if (/[\u0C00-\u0C7F]/.test(text)) return 'te'; // Telugu
+  if (/[\u0D00-\u0D7F]/.test(text)) return 'ml'; // Malayalam
   return null;
 }
 
 /**
- * Converts Devanagari (०-९), Tamil (௦-௯), and Telugu (౦-౯) digits to standard ASCII digits (0-9).
+ * Converts Devanagari, Gurmukhi, Tamil, Telugu, and Malayalam digits to standard ASCII digits (0-9).
  */
 export function normalizeIndicDigits(input: string): string {
   return input
     .replace(/[\u0966-\u096F]/g, (d) => String(d.charCodeAt(0) - 0x0966))
+    .replace(/[\u0A66-\u0A6F]/g, (d) => String(d.charCodeAt(0) - 0x0a66))
     .replace(/[\u0BE6-\u0BEF]/g, (d) => String(d.charCodeAt(0) - 0x0be6))
-    .replace(/[\u0C66-\u0C6F]/g, (d) => String(d.charCodeAt(0) - 0x0c66));
+    .replace(/[\u0C66-\u0C6F]/g, (d) => String(d.charCodeAt(0) - 0x0c66))
+    .replace(/[\u0D66-\u0D6F]/g, (d) => String(d.charCodeAt(0) - 0x0d66));
 }
 
 const MULTILINGUAL_NUMBER_WORDS: Array<{ patterns: string[]; value: number }> = [
@@ -323,7 +413,10 @@ const MULTILINGUAL_MEDICINE_ALIASES: Array<{
       'பారాसिटமால்',
       'పారాసిటమాల్',
       'పారాసెటమాల్',
-      'పారాసిటమోల్'
+      'పారాసిటమోల్',
+      'ਪੈਰਾਸੀਟਾਮੋਲ',
+      'ਪੈਰਾਸਿਟਾਮੋਲ',
+      'പാരസെറ്റമോൾ'
     ]
   },
   {
@@ -347,7 +440,9 @@ const MULTILINGUAL_MEDICINE_ALIASES: Array<{
       'ఓఆర్ఎస్',
       'ఓ.ఆర్.ఎస్',
       'ఓ ఆర్ ఎస్',
-      'ఓఆర్ఎస్ ప్యాకెట్లు'
+      'ఓఆర్ఎస్ ప్యాకెట్లు',
+      'ਓਆਰਐਸ',
+      'ഒആർഎസ്'
     ]
   },
   {
@@ -368,7 +463,9 @@ const MULTILINGUAL_MEDICINE_ALIASES: Array<{
       'அமாக்ஸிசிலின்',
       'అమాక్సిసిలిన్',
       'అమోక్సిసిలిన్',
-      'అమాక్సిసిల్లిన్'
+      'అమాక్సిసిల్లిన్',
+      'ਅਮੋਕਸੀਸਿਲਿਨ',
+      'അമോക്സിസിലിൻ'
     ]
   },
   {
@@ -730,7 +827,11 @@ export function detectMultilingualAction(rawText: string): RegisterVoiceActionTy
     /సేవ్\s*చేయి/,
     /సేవ్\s*చేయండి/,
     /భద్రపరచు/,
-    /\bregister\s*save\s*cheyi\b/
+    /\bregister\s*save\s*cheyi\b/,
+    /ਰਜਿਸਟਰ\s*ਸੇਵ/,
+    /ਸੇਵ\s*ਕਰੋ/,
+    /രജിസ്റ്റർ\s*സേവ്/,
+    /സേവ്\s*ചെയ്യുക/
   ];
   if (savePatterns.some((re) => re.test(text))) {
     return 'SAVE';
@@ -756,32 +857,48 @@ export function detectMultilingualAction(rawText: string): RegisterVoiceActionTy
     /ధృవీకరించు/,
     /వెరిఫై\s*చేయి/,
     /ఎంట్రీ\s*ధృవీకరించు/,
-    /\bverify\s*cheyi\b/
+    /\bverify\s*cheyi\b/,
+    /ਵੈਰੀਫਾਈ\s*ਕਰੋ/,
+    /ਤਸਦੀਕ\s*ਕਰੋ/,
+    /വെരിഫൈ\s*ചെയ്യുക/,
+    /പരിശോധിക്കുക/
   ];
   if (verifyPatterns.some((re) => re.test(text))) {
     return 'VERIFY';
   }
 
-  // 3. SEARCH REGISTER
+  // 3. SEARCH REGISTER / CHECK STOCK (including code-switched Hindi/Punjabi/Tamil/Telugu/Malayalam)
   const searchPatterns = [
     /\bsearch\b/,
     /\bfind\b/,
     /\bfilter\b/,
     /\blookup\b/,
+    /\bcheck\s*stock\b/,
+    /\bstock\s*(?:kitna|kina|kinna|evlo|entha|ethra)\b/,
+    /\b(?:kitna|kina|kinna|evlo|entha|ethra)\s*(?:stock|hai|irukku|undi|undu)\b/,
     /खोजो/,
     /खोजें/,
     /ढूंढो/,
     /सर्च\s*करो/,
+    /स्टॉक\s*कितना/,
+    /स्टॉक\s*कम/,
     /\bkhojo\b/,
     /\bdhundho\b/,
     /தேடு/,
     /தேடுக/,
     /கண்டுபிடி/,
+    /இருப்பு\s*எவ்வளவு/,
     /\bthedu\b/,
     /వెతుకు/,
     /వెతకండి/,
     /శోధించు/,
-    /\bvethuku\b/
+    /స్టాక్\s*ఎంత/,
+    /\bvethuku\b/,
+    /ਖੋਜੋ/,
+    /ਲੱਭੋ/,
+    /ਸਟਾਕ\s*ਕਿੰਨਾ/,
+    /തിരയുക/,
+    /സ്റ്റോക്ക്\s*എത്ര/
   ];
   if (searchPatterns.some((re) => re.test(text))) {
     return 'SEARCH';
@@ -795,7 +912,9 @@ export function detectMultilingualAction(rawText: string): RegisterVoiceActionTy
     /पीएचसी\s*डेटा/.test(text) ||
     /ओपीडी\s*मरीज/.test(text) ||
     /புறநோயாளிகள்/.test(text) ||
-    /ఓపీడీ\s*రోగులు/.test(text)
+    /ఓపీడీ\s*రోగులు/.test(text) ||
+    /ਓਪੀਡੀ\s*ਮਰੀਜ਼/.test(text) ||
+    /ഒപിഡി\s*രോഗികൾ/.test(text)
   ) {
     return 'ADD_PHC_DATA';
   }
@@ -824,7 +943,11 @@ export function detectMultilingualAction(rawText: string): RegisterVoiceActionTy
     /మార్చు/,
     /సవరించు/,
     /\bupdate\s*cheyi\b/,
-    /\bmarchu\b/
+    /\bmarchu\b/,
+    /ਅਪਡੇਟ\s*ਕਰੋ/,
+    /ਅਪਡੇਟ/,
+    /അപ്ഡേറ്റ്\s*ചെയ്യുക/,
+    /അപ്ഡേറ്റ്/
   ];
   if (updatePatterns.some((re) => re.test(text))) {
     return 'UPDATE';
@@ -869,7 +992,12 @@ export function detectMultilingualAction(rawText: string): RegisterVoiceActionTy
     /పంపిణీ/,
     /వాడారు/,
     /\btagginchu\b/,
-    /\bivvu\b/
+    /\bivvu\b/,
+    /ਘਟਾਓ/,
+    /ਘੱਟ\s*ਕਰੋ/,
+    /ਵੰਡੋ/,
+    /കുറയ്ക്കുക/,
+    /വിതരണം/
   ];
   if (dispensePatterns.some((re) => re.test(text))) {
     return 'DISPENSE';
@@ -915,7 +1043,10 @@ export function detectMultilingualAction(rawText: string): RegisterVoiceActionTy
     /స్వీకరించబడింది/,
     /\bjodinchu\b/,
     /\bcherchu\b/,
-    /\bvachayi\b/
+    /\bvachayi\b/,
+    /ਜੋੜੋ/,
+    /ਸ਼ਾਮਲ\s*ਕਰੋ/,
+    /ചേർക്കുക/
   ];
   if (addPatterns.some((re) => re.test(text))) {
     return 'ADD';
@@ -944,40 +1075,48 @@ export function buildLocalizedConfirmation(
       const nativeMap: Record<RegisterVoiceLanguageCode, string> = {
         en: englishSummary,
         hi: `रजिस्टर में ${medLabel} की +${qtyLabel} ${unitLabel} जोड़ी गईं (प्राप्ति प्रविष्टि)।`,
+        pa: `ਰਜਿਸਟਰ ਵਿੱਚ ${medLabel} ਦੀਆਂ +${qtyLabel} ${unitLabel} ਜੋੜੀਆਂ ਗਈਆਂ।`,
         ta: `பதிவேட்டில் ${medLabel} +${qtyLabel} ${unitLabel} சேர்க்கப்பட்டது (வரவு பதிவு).`,
-        te: `రిజిస్టర్‌లో ${medLabel} +${qtyLabel} ${unitLabel} జోడించబడింది (స్వీకరణ ఎంట్రీ).`
+        te: `రిజిస్టర్‌లో ${medLabel} +${qtyLabel} ${unitLabel} జోడించబడింది (స్వీకరణ ఎంట్రీ).`,
+        ml: `രജിസ്റ്ററിൽ ${medLabel} +${qtyLabel} ${unitLabel} ചേർത്തു.`
       };
-      return { nativeConfirmation: nativeMap[language], englishSummary };
+      return { nativeConfirmation: nativeMap[language] || englishSummary, englishSummary };
     }
     case 'DISPENSE': {
       const englishSummary = `DISPENSE -${qtyLabel} ${unitLabel} of ${medLabel} (OPD Dispensing Register Entry)`;
       const nativeMap: Record<RegisterVoiceLanguageCode, string> = {
         en: englishSummary,
         hi: `रजिस्टर से ${medLabel} की -${qtyLabel} ${unitLabel} घटाई/वितरित की गईं (OPD निकासी)।`,
+        pa: `ਰਜਿਸਟਰ ਤੋਂ ${medLabel} ਦੀਆਂ -${qtyLabel} ${unitLabel} ਘਟਾਈਆਂ/ਵੰਡੀਆਂ ਗਈਆਂ (OPD)।`,
         ta: `பதிவேட்டில் ${medLabel} -${qtyLabel} ${unitLabel} குறைக்கப்பட்டது / வழங்கப்பட்டது (OPD விநியோகம்).`,
-        te: `రిజిస్టర్ నుండి ${medLabel} -${qtyLabel} ${unitLabel} తగ్గించబడింది / పంపిణీ చేయబడింది (OPD).`
+        te: `రిజిస్టర్ నుండి ${medLabel} -${qtyLabel} ${unitLabel} తగ్గించబడింది / పంపిణీ చేయబడింది (OPD).`,
+        ml: `രജിസ്റ്ററിൽ നിന്ന് ${medLabel} -${qtyLabel} ${unitLabel} കുറച്ചു / വിതരണം ചെയ്തു (OPD).`
       };
-      return { nativeConfirmation: nativeMap[language], englishSummary };
+      return { nativeConfirmation: nativeMap[language] || englishSummary, englishSummary };
     }
     case 'UPDATE': {
       const englishSummary = `UPDATE ${medLabel} register quantity to ${qtyLabel} ${unitLabel}`;
       const nativeMap: Record<RegisterVoiceLanguageCode, string> = {
         en: englishSummary,
         hi: `रजिस्टर में ${medLabel} की मात्रा ${qtyLabel} ${unitLabel} पर अपडेट की गई।`,
+        pa: `ਰਜਿਸਟਰ ਵਿੱਚ ${medLabel} ਦੀ ਮਾਤਰਾ ${qtyLabel} ${unitLabel} ਤੇ ਅਪਡੇਟ ਕੀਤੀ ਗਈ।`,
         ta: `பதிவேட்டில் ${medLabel} அளவு ${qtyLabel} ${unitLabel} ஆக புதுப்பிக்கப்பட்டது.`,
-        te: `రిజిస్టర్‌లో ${medLabel} పరిమాణం ${qtyLabel} ${unitLabel} కు అప్‌డేట్ చేయబడింది.`
+        te: `రిజిస్టర్‌లో ${medLabel} పరిమాణం ${qtyLabel} ${unitLabel} కు అప్‌డేట్ చేయబడింది.`,
+        ml: `രജിസ്റ്ററിൽ ${medLabel} അളവ് ${qtyLabel} ${unitLabel} ആയി അപ്ഡേറ്റ് ചെയ്തു.`
       };
-      return { nativeConfirmation: nativeMap[language], englishSummary };
+      return { nativeConfirmation: nativeMap[language] || englishSummary, englishSummary };
     }
     case 'SEARCH': {
       const englishSummary = `SEARCH physical register for "${medLabel}"`;
       const nativeMap: Record<RegisterVoiceLanguageCode, string> = {
         en: englishSummary,
         hi: `रजिस्टर में "${medLabel}" खोजा जा रहा है।`,
+        pa: `ਰਜਿਸਟਰ ਵਿੱਚ "${medLabel}" ਖੋਜਿਆ ਜਾ ਰਿਹਾ ਹੈ।`,
         ta: `பதிவேட்டில் "${medLabel}" தேடப்படுகிறது.`,
-        te: `రిజిస్టర్‌లో "${medLabel}" కోసం వెతుకుతోంది.`
+        te: `రిజిస్టర్‌లో "${medLabel}" కోసం వెతుకుతోంది.`,
+        ml: `രജിസ്റ്ററിൽ "${medLabel}" തിരയുന്നു.`
       };
-      return { nativeConfirmation: nativeMap[language], englishSummary };
+      return { nativeConfirmation: nativeMap[language] || englishSummary, englishSummary };
     }
     case 'VERIFY': {
       const englishSummary = medicineName
@@ -986,30 +1125,36 @@ export function buildLocalizedConfirmation(
       const nativeMap: Record<RegisterVoiceLanguageCode, string> = {
         en: englishSummary,
         hi: `रजिस्टर प्रविष्टि सत्यापित (Verify) की जा रही है।`,
+        pa: `ਰਜਿਸਟਰ ਐਂਟਰੀ ਤਸਦੀਕ (Verify) ਕੀਤੀ ਜਾ ਰਹੀ ਹੈ।`,
         ta: `பதிவேட்டு பதிவு சரிபார்க்கப்படுகிறது (Verify).`,
-        te: `రిజిస్టర్ ఎంట్రీ ధృవీకరించబడుతోంది (Verify).`
+        te: `రిజిస్టర్ ఎంట్రీ ధృవీకరించబడుతోంది (Verify).`,
+        ml: `രജിസ്റ്റർ എൻട്രി പരിശോധിച്ചുറപ്പിക്കുന്നു (Verify).`
       };
-      return { nativeConfirmation: nativeMap[language], englishSummary };
+      return { nativeConfirmation: nativeMap[language] || englishSummary, englishSummary };
     }
     case 'SAVE': {
       const englishSummary = 'SAVE & COMMIT physical register entries to facility stock ledger';
       const nativeMap: Record<RegisterVoiceLanguageCode, string> = {
         en: englishSummary,
         hi: `भौतिक रजिस्टर की प्रविष्टियां मुख्य स्टॉक लेजर में सेव की जा रही हैं।`,
+        pa: `ਭੌਤਿਕ ਰਜਿਸਟਰ ਦੀਆਂ ਐਂਟਰੀਆਂ ਮੁੱਖ ਸਟਾਕ ਲੇਜ਼ਰ ਵਿੱਚ ਸੇਵ ਕੀਤੀਆਂ ਜਾ ਰਹੀਆਂ ਹਨ।`,
         ta: `பதிவேட்டு பதிவுகள் முதன்மை இருப்பு கணக்கில் சேமிக்கப்படுகின்றன.`,
-        te: `రిజిస్టర్ ఎంట్రీలు ప్రధాన స్టాక్ లెడ్జర్‌లో సేవ్ చేయబడుతున్నాయి.`
+        te: `రిజిస్టర్ ఎంట్రీలు ప్రధాన స్టాక్ లెడ్జర్‌లో సేవ్ చేయబడుతున్నాయి.`,
+        ml: `രജിസ്റ്റർ എൻട്രികൾ പ്രധാന സ്റ്റോക്ക് ലെഡ്ജറിൽ സേവ് ചെയ്യുന്നു.`
       };
-      return { nativeConfirmation: nativeMap[language], englishSummary };
+      return { nativeConfirmation: nativeMap[language] || englishSummary, englishSummary };
     }
     case 'ADD_PHC_DATA': {
       const englishSummary = `ADD PHC Daily Telemetry & Register Data (${medLabel}: ${qtyLabel} ${unitLabel})`;
       const nativeMap: Record<RegisterVoiceLanguageCode, string> = {
         en: englishSummary,
         hi: `पीएचसी दैनिक डेटा और रजिस्टर प्रविष्टि दर्ज की गई।`,
+        pa: `ਪੀਐਚਸੀ ਰੋਜ਼ਾਨਾ ਡੇਟਾ ਅਤੇ ਰਜਿਸਟਰ ਐਂਟਰੀ ਦਰਜ ਕੀਤੀ ਗਈ।`,
         ta: `ஆரம்ப சுகாதார நிலைய தினசரி தரவு பதிவு செய்யப்பட்டது.`,
-        te: `పిహెచ్‌సి రోజువారీ డేటా మరియు రిజిస్టర్ ఎంట్రీ నమోదు చేయబడింది.`
+        te: `పిహెచ్‌సి రోజువారీ డేటా మరియు రిజిస్టర్ ఎంట్రీ నమోదు చేయబడింది.`,
+        ml: `പിഎച്ച്സി ദൈനംദിന ഡാറ്റയും രജിസ്റ്റർ എൻട്രിയും രേഖപ്പെടുത്തി.`
       };
-      return { nativeConfirmation: nativeMap[language], englishSummary };
+      return { nativeConfirmation: nativeMap[language] || englishSummary, englishSummary };
     }
     default: {
       const englishSummary =
@@ -1017,10 +1162,12 @@ export function buildLocalizedConfirmation(
       const nativeMap: Record<RegisterVoiceLanguageCode, string> = {
         en: 'Could not understand command in English (en-IN). Please try again or edit manually.',
         hi: 'चयनित भाषा (हिन्दी hi-IN) में कमांड समझ नहीं आया। कृपया पुनः प्रयास करें या मैन्युअल रूप से संपादित करें।',
+        pa: 'ਚੁਣੀ ਗਈ ਭਾਸ਼ਾ (ਪੰਜਾਬੀ pa-IN) ਵਿੱਚ ਕਮਾਂਡ ਸਮਝ ਨਹੀਂ ਆਈ। ਕਿਰਪਾ ਕਰਕੇ ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰੋ ਜਾਂ ਮੈਨੂਅਲ ਤੌਰ ਤੇ ਸੋਧੋ।',
         ta: 'தேர்ந்தெடுக்கப்பட்ட மொழியில் (தமிழ் ta-IN) கட்டளையைப் புரிந்துகொள்ள முடியவில்லை. மீண்டும் முயலவும் அல்லது கைமுறையாகத் திருத்தவும்.',
-        te: 'ఎంచుకున్న భాషలో (తెలుగు te-IN) కమాండ్ అర్థం కాలేదు. దయచేసి మళ్లీ ప్రయత్నించండి లేదా మాన్యువల్‌గా సవరించండి.'
+        te: 'ఎంచుకున్న భాషలో (తెలుగు te-IN) కమాండ్ అర్థం కాలేదు. దయచేసి మళ్లీ ప్రయత్నించండి లేదా మాన్యువల్‌గా సవరించండి.',
+        ml: 'തിരഞ്ഞെടുത്ത ഭാഷയിൽ (മലയാളം ml-IN) കമാൻഡ് മനസ്സിലാക്കാൻ കഴിഞ്ഞില്ല. ദയവായി വീണ്ടും ശ്രമിക്കുക അല്ലെങ്കിൽ നേരിട്ട് തിരുത്തുക.'
       };
-      return { nativeConfirmation: nativeMap[language], englishSummary };
+      return { nativeConfirmation: nativeMap[language] || englishSummary, englishSummary };
     }
   }
 }

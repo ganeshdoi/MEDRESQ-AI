@@ -1,19 +1,21 @@
 import { en, type TranslationDictionary } from './en.ts';
 import { hi } from './hi.ts';
+import { pa } from './pa.ts';
 import { ta } from './ta.ts';
 import { te } from './te.ts';
+import { ml } from './ml.ts';
+import { translateUiText } from './uiPhrases.ts';
 
 /**
- * Supported initial languages for MedResQ AI:
+ * Supported languages for MedResQ AI (Global 6-Language System):
  * 1. English — en
- * 2. Hindi — hi
- * 3. Tamil — ta
- * 4. Telugu — te
- *
- * Architecture is extensible so additional Indian languages (e.g. kn, ml, mr, bn, gu)
- * can be registered in SUPPORTED_LANGUAGES and TRANSLATIONS without structural changes.
+ * 2. Hindi — hi (हिन्दी)
+ * 3. Punjabi — pa (ਪੰਜਾਬੀ)
+ * 4. Tamil — ta (தமிழ்)
+ * 5. Telugu — te (తెలుగు)
+ * 6. Malayalam — ml (മലയാളം)
  */
-export type SupportedLanguageCode = 'en' | 'hi' | 'ta' | 'te';
+export type SupportedLanguageCode = 'en' | 'hi' | 'pa' | 'ta' | 'te' | 'ml';
 
 export interface LanguageMetadata {
   code: SupportedLanguageCode;
@@ -25,22 +27,34 @@ export interface LanguageMetadata {
 export const SUPPORTED_LANGUAGES: readonly LanguageMetadata[] = [
   { code: 'en', name: 'English', nativeLabel: 'English', bcp47: 'en-IN' },
   { code: 'hi', name: 'Hindi', nativeLabel: 'हिन्दी', bcp47: 'hi-IN' },
+  { code: 'pa', name: 'Punjabi', nativeLabel: 'ਪੰਜਾਬੀ', bcp47: 'pa-IN' },
   { code: 'ta', name: 'Tamil', nativeLabel: 'தமிழ்', bcp47: 'ta-IN' },
-  { code: 'te', name: 'Telugu', nativeLabel: 'తెలుగు', bcp47: 'te-IN' }
+  { code: 'te', name: 'Telugu', nativeLabel: 'తెలుగు', bcp47: 'te-IN' },
+  { code: 'ml', name: 'Malayalam', nativeLabel: 'മലയാളം', bcp47: 'ml-IN' }
 ] as const;
 
 export const TRANSLATIONS: Record<SupportedLanguageCode, TranslationDictionary> = {
   en,
   hi,
+  pa,
   ta,
-  te
+  te,
+  ml
 };
 
 export const DEFAULT_LANGUAGE: SupportedLanguageCode = 'en';
 export const LANGUAGE_STORAGE_KEY = 'medresq_ui_language';
 
 export function isValidLanguageCode(code: unknown): code is SupportedLanguageCode {
-  return typeof code === 'string' && (code === 'en' || code === 'hi' || code === 'ta' || code === 'te');
+  return (
+    typeof code === 'string' &&
+    (code === 'en' ||
+      code === 'hi' ||
+      code === 'pa' ||
+      code === 'ta' ||
+      code === 'te' ||
+      code === 'ml')
+  );
 }
 
 export function getSavedLanguage(): SupportedLanguageCode {
@@ -106,4 +120,4 @@ export function formatDesignationLabel(
   return dict.attendance.designations.other;
 }
 
-export { en, hi, ta, te, type TranslationDictionary };
+export { en, hi, pa, ta, te, ml, translateUiText, type TranslationDictionary };

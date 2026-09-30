@@ -522,13 +522,18 @@ export const NationalPHCDirectory: React.FC = () => {
                           <td className="py-2.5 px-3 text-right whitespace-nowrap">
                             <div className="flex items-center justify-end gap-1.5">
                               {isCurrent ? (
-                                <span className="px-2.5 py-1 bg-emerald-100 text-emerald-900 rounded-md font-bold text-[11px]">
-                                  Assigned PHC
+                                <span className="px-2.5 py-1 bg-emerald-100 text-emerald-900 rounded-md font-bold text-[11px] flex items-center gap-1">
+                                  <CheckCircle2 className="w-3 h-3 text-emerald-700" />
+                                  <span>Active PHC</span>
                                 </span>
                               ) : (
-                                <span className="px-2 py-1 bg-slate-100 text-slate-600 rounded-md font-mono text-[10px]">
-                                  Peer Network PHC
-                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSelectActivePHC(phc)}
+                                  className="px-2.5 py-1 bg-teal-700 hover:bg-teal-800 text-white rounded-md font-bold text-[11px] transition-colors cursor-pointer"
+                                >
+                                  Select PHC
+                                </button>
                               )}
                               <button
                                 type="button"
@@ -650,13 +655,17 @@ export const NationalPHCDirectory: React.FC = () => {
                     {/* Actions */}
                     <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2 text-xs">
                       {!isCurrent ? (
-                        <span className="flex-1 py-1.5 bg-slate-50 text-slate-600 border border-slate-200 rounded-lg font-mono font-semibold flex items-center justify-center gap-1 text-[11px]">
-                          <span>Peer Network Facility (Read-Only)</span>
-                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleSelectActivePHC(phc)}
+                          className="flex-1 py-1.5 bg-teal-700 hover:bg-teal-800 text-white rounded-lg font-bold flex items-center justify-center gap-1 text-[11px] transition-colors cursor-pointer"
+                        >
+                          <span>Select PHC</span>
+                        </button>
                       ) : (
                         <span className="flex-1 py-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg font-bold flex items-center justify-center gap-1 text-[11px]">
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>Assigned Session PHC</span>
+                          <span>Active Demo PHC</span>
                         </span>
                       )}
 

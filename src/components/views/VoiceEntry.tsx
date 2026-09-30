@@ -43,17 +43,23 @@ const RECENT_COMMANDS_STORAGE_KEY = 'medresq_recent_voice_commands_v1';
 const LANGUAGE_LABELS: Record<string, string> = {
   'en-IN': 'English (en-IN)',
   'hi-IN': 'Hindi (हिन्दी · hi-IN)',
+  'pa-IN': 'Punjabi (ਪੰਜਾਬੀ · pa-IN)',
   'ta-IN': 'Tamil (தமிழ் · ta-IN)',
   'te-IN': 'Telugu (తెలుగు · te-IN)',
+  'ml-IN': 'Malayalam (മലയാളം · ml-IN)',
   en: 'English (en-IN)',
   hi: 'Hindi (हिन्दी · hi-IN)',
+  pa: 'Punjabi (ਪੰਜਾਬੀ · pa-IN)',
   ta: 'Tamil (தமிழ் · ta-IN)',
   te: 'Telugu (తెలుగు · te-IN)',
+  ml: 'Malayalam (മലയാളം · ml-IN)',
   hinglish: 'Hinglish (hi-IN)',
   hindi: 'Hindi (हिन्दी · hi-IN)',
+  punjabi: 'Punjabi (ਪੰਜਾਬੀ · pa-IN)',
   marwari: 'Marwari (मारवाड़ी)',
   tamil: 'Tamil (தமிழ் · ta-IN)',
   telugu: 'Telugu (తెలుగు · te-IN)',
+  malayalam: 'Malayalam (മലയാളം · ml-IN)',
   bengali: 'Bengali (বাংলা)',
   marathi: 'Marathi (मराठी)',
   english: 'English (en-IN)'
@@ -568,11 +574,12 @@ export const VoiceEntry: React.FC = () => {
   const sampleVoicePhrases = [
     { text: 'Register 60 packets of ORS batch ORS-2609 dispensed at OPD today.', lang: 'en-IN', langBadge: 'English (en-IN)', desc: 'Log handwritten register line by voice' },
     { text: 'पैरासिटामोल 500mg की 20 टैबलेट जोड़ो।', lang: 'hi-IN', langBadge: 'Hindi (hi-IN)', desc: 'Hindi Devanagari register addition' },
+    { text: 'ਪੈਰਾਸਿਟਾਮੋਲ 500mg ਦੀਆਂ 20 ਗੋਲੀਆਂ ਜੋੜੋ।', lang: 'pa-IN', langBadge: 'Punjabi (pa-IN)', desc: 'Punjabi Gurmukhi register addition' },
     { text: 'பாராசிட்டமால் 20 சேர்', lang: 'ta-IN', langBadge: 'Tamil (ta-IN)', desc: 'Tamil voice register addition' },
     { text: 'పారాసిటమాల్ 20 జోడించు', lang: 'te-IN', langBadge: 'Telugu (te-IN)', desc: 'Telugu voice register addition' },
+    { text: 'പാരസെറ്റമോൾ 20 ചേർക്കുക', lang: 'ml-IN', langBadge: 'Malayalam (ml-IN)', desc: 'Malayalam voice register addition' },
     { text: 'Check stock for Oral Rehydration Salts packets in main store.', lang: 'en-IN', langBadge: 'Check Stock (en-IN)', desc: 'Query live FEFO stock & days of cover' },
-    { text: 'Add replenishment order for 400 packets of ORS from district warehouse.', lang: 'en-IN', langBadge: 'Add Order (en-IN)', desc: 'Create RMSCL replenishment indent' },
-    { text: 'आपातकालीन वार्ड में पैरासिटामोल 500mg की 120 गोलियां तुरंत दी गईं।', lang: 'hi-IN', langBadge: 'Hindi (hi-IN)', desc: 'Devanagari emergency ward dispensing' }
+    { text: 'Add replenishment order for 400 packets of ORS from district warehouse.', lang: 'en-IN', langBadge: 'Add Order (en-IN)', desc: 'Create RMSCL replenishment indent' }
   ];
 
   const matchedPreviewMedicine = parsedResult
@@ -752,8 +759,10 @@ export const VoiceEntry: React.FC = () => {
                 >
                   <option value="en-IN">English — en-IN</option>
                   <option value="hi-IN">Hindi (हिन्दी) — hi-IN</option>
+                  <option value="pa-IN">Punjabi (ਪੰਜਾਬੀ) — pa-IN</option>
                   <option value="ta-IN">Tamil (தமிழ்) — ta-IN</option>
                   <option value="te-IN">Telugu (తెలుగు) — te-IN</option>
+                  <option value="ml-IN">Malayalam (മലയാളം) — ml-IN</option>
                 </select>
               </div>
             </div>
@@ -821,7 +830,7 @@ export const VoiceEntry: React.FC = () => {
                     : 'Click microphone to record voice entry'}
                 </span>
                 <span className="text-[11px] text-slate-500 mt-0.5 block font-mono">
-                  Engine: <strong>gemini-3.5-transcribe</strong> ({selectedLanguage} · English, Hindi, Tamil, Telugu)
+                  Engine: <strong>gemini-3.5-transcribe</strong> ({selectedLanguage} · English, Hindi, Punjabi, Tamil, Telugu, Malayalam)
                 </span>
 
                 {/* Interactive Audio Tooltip & Tips Popover */}

@@ -3,6 +3,7 @@ import { AppProvider, useApp } from './context/AppContext.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { TopBar } from './components/TopBar.tsx';
 import { GeminiAssistantDrawer } from './components/ui/GeminiAssistantDrawer.tsx';
+import { GlobalDomLocalizer } from './components/ui/GlobalDomLocalizer.tsx';
 
 // Core Ground-Level Operational Modules
 import { HomeOverview } from './components/views/HomeOverview.tsx';
@@ -119,6 +120,7 @@ const MainLayout: React.FC = () => {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-slate-100 font-sans text-slate-800 antialiased">
+      <GlobalDomLocalizer />
       {/* Accessibility Skip Link */}
       <a
         href="#main-content"

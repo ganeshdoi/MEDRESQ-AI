@@ -227,26 +227,29 @@ export function createBoundInchargeSession(
 }
 
 /**
- * Creates the canonical synthetic Demo Medical Officer session for PHC Osian (Jodhpur, Rajasthan).
+ * Creates the canonical synthetic Demo Medical Officer session for any selected demo PHC (defaults to PHC Osian).
  * Uses the existing AuthenticatedInchargeSession structure without creating a second auth system.
  */
 export function createDemoOfficerSession(
   facilities: PHCFacility[] = INDIA_PHC_DIRECTORY,
-  options?: { sessionToken?: string; loginTimestamp?: string }
+  options?: { sessionToken?: string; loginTimestamp?: string; targetPHC?: PHCFacility | null; phcId?: string }
 ): { session: AuthenticatedInchargeSession; assignedPHC: PHCFacility } {
   const demoPhc =
+    options?.targetPHC ||
+    (options?.phcId ? facilities.find((f) => f.id === options.phcId || f.code === options.phcId) : undefined) ||
     facilities.find((f) => f.id === 'phc-osian' || f.code === 'RJ-JDP-PHC-021') ||
     facilities[0] ||
     INDIA_PHC_DIRECTORY[0];
   const account = getPHCInchargeAccount(demoPhc);
   const demoAccount: PHCInchargeAccount = {
     ...account,
-    officerId: 'OSN001',
-    officerName: 'Dr. Suresh Chandra Bishnoi',
-    inchargeName: 'Dr. Suresh Chandra Bishnoi',
-    designation: 'Medical Officer In-Charge',
-    district: 'Jodhpur',
-    state: 'Rajasthan'
+    officerId: getOfficerIdForPHC(demoPhc),
+    officerName: demoPhc.medicalOfficerInCharge || 'Dr. Suresh Chandra Bishnoi',
+    inchargeName: demoPhc.medicalOfficerInCharge || 'Dr. Suresh Chandra Bishnoi',
+    designation: 'Medical Officer In-Charge (Demo Account)',
+    district: demoPhc.district,
+    block: demoPhc.block,
+    state: demoPhc.state
   };
   const session = createBoundInchargeSession(demoPhc, demoAccount, {
     sessionToken: options?.sessionToken,
@@ -255,6 +258,7 @@ export function createDemoOfficerSession(
     loginMode: 'DEMO_ACCESS',
     isDemoAccount: true
   });
+  session.unlockedPhcIds = facilities.map((f) => f.id);
   return { session, assignedPHC: demoPhc };
 }
 
@@ -271,17 +275,19 @@ export function loadSavedInchargeSession(): AuthenticatedInchargeSession | null 
     if (!rawSession) return null;
     const parsed = JSON.parse(rawSession) as AuthenticatedInchargeSession;
     if (!parsed || !parsed.phcId || !parsed.officerId) return null;
+    const isDemo = Boolean(parsed.isDemoAccount || parsed.loginMode === 'DEMO_ACCESS');
     return {
       ...parsed,
       assignedPhcId: parsed.assignedPhcId || parsed.phcId,
       assignedPhcName: parsed.assignedPhcName || parsed.phcName,
       officerName: parsed.officerName || parsed.inchargeName,
       authenticationStatus: 'AUTHENTICATED',
-      unlockedPhcIds: [parsed.assignedPhcId || parsed.phcId],
-      maskedCredentialUsed:
-        parsed.loginMode === 'DEMO_ACCESS' ? 'DEMO ACCESS (NO PASSWORD)' : '••••••••••••',
-      loginMode: parsed.loginMode || 'OFFICER_LOGIN',
-      isDemoAccount: Boolean(parsed.isDemoAccount || parsed.loginMode === 'DEMO_ACCESS'),
+      unlockedPhcIds: isDemo
+        ? INDIA_PHC_DIRECTORY.map((f) => f.id)
+        : [parsed.assignedPhcId || parsed.phcId],
+      maskedCredentialUsed: isDemo ? 'DEMO ACCESS (NO PASSWORD)' : '••••••••••••',
+      loginMode: parsed.loginMode || 'DEMO_ACCESS',
+      isDemoAccount: isDemo,
       isSimulatedDemoSession: true
     };
   } catch {
@@ -302,18 +308,18 @@ export function saveInchargeSession(
     } else {
       const boundPhcId = session.assignedPhcId || session.phcId;
       const shouldRemember = rememberDevice ?? session.rememberDevice ?? false;
+      const isDemo = Boolean(session.isDemoAccount || session.loginMode === 'DEMO_ACCESS');
       const sanitized: AuthenticatedInchargeSession = {
         ...session,
         assignedPhcId: boundPhcId,
         assignedPhcName: session.assignedPhcName || session.phcName,
         officerName: session.officerName || session.inchargeName,
         authenticationStatus: 'AUTHENTICATED',
-        unlockedPhcIds: [boundPhcId],
-        maskedCredentialUsed:
-          session.loginMode === 'DEMO_ACCESS' ? 'DEMO ACCESS (NO PASSWORD)' : '••••••••••••',
+        unlockedPhcIds: isDemo ? INDIA_PHC_DIRECTORY.map((f) => f.id) : [boundPhcId],
+        maskedCredentialUsed: isDemo ? 'DEMO ACCESS (NO PASSWORD)' : '••••••••••••',
         rememberDevice: shouldRemember,
-        loginMode: session.loginMode || 'OFFICER_LOGIN',
-        isDemoAccount: Boolean(session.isDemoAccount || session.loginMode === 'DEMO_ACCESS'),
+        loginMode: session.loginMode || 'DEMO_ACCESS',
+        isDemoAccount: isDemo,
         isSimulatedDemoSession: true
       };
       const serialized = JSON.stringify(sanitized);

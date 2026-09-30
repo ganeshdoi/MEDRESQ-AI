@@ -52,9 +52,9 @@ export const WorkforceIntelligence: React.FC = () => {
     return d.toISOString().split('T')[0];
   }, [todayStr]);
 
-  // Security: When a Medical Officer is signed in, strictly lock the view to their assigned PHC
+  // In Demo Mode, follow selectedPHC dynamically; in production officer mode, lock to assignedPHC
   const boundPhc = useMemo(() => {
-    if (inchargeSession) {
+    if (inchargeSession && !inchargeSession.isDemoAccount && inchargeSession.loginMode !== 'DEMO_ACCESS') {
       const targetId = inchargeSession.assignedPhcId || inchargeSession.phcId;
       return facilities.find((f) => f.id === targetId) || selectedPHC;
     }

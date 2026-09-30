@@ -77,10 +77,10 @@ export const TopBar: React.FC = () => {
     openAuthModal,
     authenticatePHCIncharge,
     signOutIncharge,
-    isGeminiAssistantOpen,
-    toggleGeminiAssistant,
     language,
     setLanguage,
+    isGeminiAssistantOpen,
+    setIsGeminiAssistantOpen,
     t
   } = useApp();
 
@@ -189,20 +189,9 @@ export const TopBar: React.FC = () => {
 
   const handleSelectSearchResult = (item: GlobalSearchResultItem) => {
     if (item.phcToSelect && item.phcToSelect.id !== selectedPHC.id) {
-      setActiveModule('map');
-      setTimeout(() => {
-        window.dispatchEvent(
-          new CustomEvent('medresq:global-search', {
-            detail: {
-              query: item.phcToSelect!.name,
-              category: item.category,
-              phcId: item.phcToSelect!.id
-            }
-          })
-        );
-      }, 60);
+      setSelectedPHC(item.phcToSelect, true);
       showNotification(
-        `Inspecting peer facility ${item.phcToSelect.name} on Network Stock Map (Active session remains bound to ${selectedPHC.name}).`
+        `Switched active facility to ${item.phcToSelect.name} (${item.phcToSelect.code}).`
       );
       setIsSearchOpen(false);
       return;
@@ -281,31 +270,150 @@ export const TopBar: React.FC = () => {
           <Menu className="w-5 h-5" />
         </button>
 
-        {/* Bound Assigned PHC Facility Indicator (Read-Only — Bound to Officer Session) */}
-        <div
-          id="assigned-facility-badge"
-          className="flex items-center gap-2 px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-left"
-          title={`Assigned Facility: ${selectedPHC.name} (${selectedPHC.code}) — Bound to Officer ${
-            inchargeSession?.officerId || getPHCInchargeCredential(selectedPHC).officerId
-          }`}
-        >
-          <Building2 className="w-4 h-4 text-emerald-600 shrink-0" aria-hidden="true" />
-          <div className="min-w-0 max-w-[155px] sm:max-w-[210px] xl:max-w-[250px]">
-            <div className="font-bold text-slate-900 text-xs truncate leading-tight flex items-center gap-1.5">
-              <span className="truncate">{selectedPHC.name}</span>
-              <span className="font-mono text-[10px] text-emerald-700 shrink-0 hidden md:inline">
-                ({selectedPHC.code})
-              </span>
+        {/* Interactive PHC / Facility Selector Dropdown (No Password Required in Demo Mode) */}
+        <div className="relative" ref={phcPickerRef}>
+          <button
+            type="button"
+            id="assigned-facility-badge"
+            onClick={() => {
+              setIsPhcPickerOpen((prev) => !prev);
+              setIsSearchOpen(false);
+              setIsBellOpen(false);
+              setIsHelpOpen(false);
+            }}
+            aria-expanded={isPhcPickerOpen}
+            aria-label={`Select PHC Facility (Current: ${selectedPHC.name})`}
+            className="flex items-center gap-2 px-2.5 sm:px-3 py-1.5 rounded-lg border border-teal-200 bg-teal-50/50 hover:bg-teal-50 text-left transition-colors cursor-pointer"
+            title={`Select Active PHC Facility (Current: ${selectedPHC.name} · ${selectedPHC.code})`}
+          >
+            <Building2 className="w-4 h-4 text-emerald-600 shrink-0" aria-hidden="true" />
+            <div className="min-w-0 max-w-[155px] sm:max-w-[210px] xl:max-w-[250px]">
+              <div className="font-bold text-slate-900 text-xs truncate leading-tight flex items-center gap-1.5">
+                <span className="truncate">{selectedPHC.name}</span>
+                <span className="font-mono text-[10px] text-emerald-700 shrink-0 hidden md:inline">
+                  ({selectedPHC.code})
+                </span>
+              </div>
+              <div className="text-[10px] text-slate-500 truncate leading-tight hidden sm:block">
+                {selectedPHC.block} · {selectedPHC.district}, {selectedPHC.state}
+              </div>
             </div>
-            <div className="text-[10px] text-slate-500 truncate leading-tight hidden sm:block">
-              {selectedPHC.block} · {selectedPHC.district}, {selectedPHC.state}
+            <ChevronDown className="w-3.5 h-3.5 text-teal-700 shrink-0" aria-hidden="true" />
+          </button>
+
+          {isPhcPickerOpen && (
+            <div
+              role="dialog"
+              aria-label="Select Demo PHC Facility"
+              className="absolute left-0 mt-2 w-80 sm:w-96 bg-white rounded-xl border border-slate-200 shadow-2xl z-50 overflow-hidden"
+            >
+              <div className="p-3 bg-slate-900 text-white flex items-center justify-between gap-2">
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-mono uppercase tracking-wider text-teal-300 font-bold">
+                      Select Demo PHC / Facility
+                    </span>
+                    <span className="px-1.5 py-0.5 rounded bg-amber-400/20 text-amber-200 text-[9px] font-mono font-bold">
+                      NO PASSWORD REQUIRED
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-300 mt-0.5">
+                    Switch active PHC inventory, forecast, orders &amp; network data
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsPhcPickerOpen(false)}
+                  className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white cursor-pointer"
+                  aria-label="Close facility selector"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              <div className="p-2.5 bg-slate-50 border-b border-slate-200 space-y-2">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    ref={phcSearchInputRef}
+                    type="text"
+                    value={phcSearchQuery}
+                    onChange={(e) => setPhcSearchQuery(e.target.value)}
+                    placeholder="Search PHC by name, code, block, or district..."
+                    className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-600"
+                  />
+                </div>
+                <div className="flex items-center gap-1 text-[10px] font-bold">
+                  {(
+                    [
+                      { id: 'ALL', label: 'All Demo PHCs' },
+                      { id: 'RAJASTHAN', label: 'Rajasthan' },
+                      { id: '24X7', label: '24x7 PHCs' },
+                      { id: 'CHC', label: 'CHCs' }
+                    ] as const
+                  ).map((f) => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => setPhcScopeFilter(f.id)}
+                      className={`px-2 py-1 rounded cursor-pointer transition-colors ${
+                        phcScopeFilter === f.id
+                          ? 'bg-teal-700 text-white'
+                          : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="max-h-72 overflow-y-auto divide-y divide-slate-100 custom-scrollbar">
+                {filteredFacilities.map((fac) => {
+                  const isSelected = fac.id === selectedPHC.id;
+                  return (
+                    <button
+                      key={fac.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedPHC(fac, true);
+                        setIsPhcPickerOpen(false);
+                        showNotification(
+                          `Selected facility: ${fac.name} (${fac.code}) — Inventory, forecast, orders & network synced.`
+                        );
+                      }}
+                      className={`w-full p-2.5 text-left flex items-center justify-between gap-2 transition-colors cursor-pointer ${
+                        isSelected ? 'bg-teal-50/90 font-semibold' : 'hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-slate-900 truncate flex items-center gap-1.5">
+                          <span className="truncate">{fac.name}</span>
+                          <span className="font-mono text-[10px] text-teal-700 shrink-0">
+                            ({fac.code})
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-slate-500 truncate">
+                          {fac.block} · {fac.district}, {fac.state} · MOIC: {fac.medicalOfficerInCharge}
+                        </div>
+                      </div>
+                      {isSelected ? (
+                        <CheckCircle2 className="w-4 h-4 text-teal-600 shrink-0" />
+                      ) : (
+                        <span className="text-[10px] font-mono font-bold text-teal-700 bg-teal-50 px-2 py-0.5 rounded border border-teal-200 shrink-0">
+                          Select
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-          <Lock className="w-3 h-3 text-teal-600 shrink-0" aria-label="Bound to authenticated session" />
+          )}
         </div>
 
         {/* Officer Role Selector (Desktop) */}
-        <div className="hidden 2xl:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white shrink-0">
+        <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white shrink-0">
           <UserCheck className="w-3.5 h-3.5 text-slate-500 shrink-0" aria-hidden="true" />
           <label htmlFor="role-selector" className="sr-only">
             Select Officer Role
@@ -578,6 +686,28 @@ export const TopBar: React.FC = () => {
 
       {/* Zone 3: Primary Operational Actions & Stock Threshold Notification Bell */}
       <div className="flex items-center gap-2 shrink-0">
+        {/* Prominent Ask Gemini AI Command Center Button */}
+        <button
+          type="button"
+          id="topbar-ask-gemini-btn"
+          onClick={() => {
+            setIsGeminiAssistantOpen(!isGeminiAssistantOpen);
+            setIsBellOpen(false);
+            setIsPhcPickerOpen(false);
+            setIsSearchOpen(false);
+          }}
+          aria-pressed={isGeminiAssistantOpen}
+          title="Open Ask Gemini AI Command Center — Context-aware PHC operational intelligence"
+          className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all duration-150 whitespace-nowrap cursor-pointer shadow-xs ${
+            isGeminiAssistantOpen
+              ? 'bg-slate-900 text-teal-300 ring-2 ring-teal-400/50 border border-teal-500/40'
+              : 'bg-linear-to-r from-indigo-600 via-teal-600 to-emerald-600 hover:from-indigo-700 hover:via-teal-700 hover:to-emerald-700 text-white ring-1 ring-teal-400/40 shadow-teal-600/20 hover:shadow-md'
+          }`}
+        >
+          <Sparkles className="w-3.5 h-3.5 text-teal-200 animate-pulse shrink-0" aria-hidden="true" />
+          <span>Ask Gemini</span>
+        </button>
+
         <button
           type="button"
           onClick={() => setActiveModule('analytics')}
@@ -605,46 +735,48 @@ export const TopBar: React.FC = () => {
                 aria-pressed={isOfflineMode}
                 title={
                   isOfflineMode
-                    ? 'Offline: Actions are queued locally and will sync when online'
+                    ? 'OFFLINE: Actions are queued locally and will sync when online'
                     : isQueueSyncing
-                    ? 'Syncing: Uploading queued records to cloud'
+                    ? 'SYNCING: Uploading queued records to cloud'
                     : failedRetryCount > 0
-                    ? `Online (${failedRetryCount} failed item(s) requiring retry)`
-                    : 'Online: Connected to cloud & local ledger'
+                    ? `ONLINE · FAILED / RETRY (${failedRetryCount} item(s) need recovery)`
+                    : pendingSyncCount > 0
+                    ? `ONLINE · PENDING (${pendingSyncCount} item(s) waiting to sync)`
+                    : 'ONLINE · All local & cloud records synchronized'
                 }
-                className={`flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap cursor-pointer ${
+                className={`flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-xs font-semibold border transition-all whitespace-nowrap cursor-pointer ${
                   isOfflineMode
                     ? 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100'
                     : isQueueSyncing
-                    ? 'bg-blue-50 text-blue-900 border-blue-300 hover:bg-blue-100'
+                    ? 'bg-sky-50 text-sky-900 border-sky-300 hover:bg-sky-100'
                     : failedRetryCount > 0
                     ? 'bg-rose-50 text-rose-900 border-rose-300 hover:bg-rose-100'
-                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                    : 'bg-emerald-50/70 text-emerald-900 border-emerald-200 hover:bg-emerald-100/70'
                 }`}
               >
                 {isOfflineMode ? (
                   <>
                     <WifiOff className="w-3.5 h-3.5 text-amber-700 shrink-0" aria-hidden="true" />
-                    <span className="hidden md:inline font-semibold">
-                      Offline{pendingSyncCount > 0 ? ` (${pendingSyncCount} Queued)` : ''}
+                    <span className="hidden md:inline font-mono text-[11px] font-bold">
+                      OFFLINE{pendingSyncCount > 0 ? ` · ${pendingSyncCount} PENDING` : ''}
                     </span>
                   </>
                 ) : isQueueSyncing ? (
                   <>
-                    <RefreshCw className="w-3.5 h-3.5 text-blue-600 animate-spin shrink-0" aria-hidden="true" />
-                    <span className="hidden md:inline font-semibold">Syncing...</span>
+                    <RefreshCw className="w-3.5 h-3.5 text-sky-600 animate-spin shrink-0" aria-hidden="true" />
+                    <span className="hidden md:inline font-mono text-[11px] font-bold">SYNCING</span>
                   </>
                 ) : failedRetryCount > 0 ? (
                   <>
                     <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" aria-hidden="true" />
-                    <span className="hidden md:inline font-semibold">
-                      Online · {failedRetryCount} Retry Needed
+                    <span className="hidden md:inline font-mono text-[11px] font-bold">
+                      FAILED / RETRY ({failedRetryCount})
                     </span>
                   </>
                 ) : (
                   <>
                     <Wifi className="w-3.5 h-3.5 text-emerald-600 shrink-0" aria-hidden="true" />
-                    <span className="hidden md:inline">Online</span>
+                    <span className="hidden md:inline font-mono text-[11px] font-bold">ONLINE</span>
                   </>
                 )}
               </button>
@@ -659,7 +791,7 @@ export const TopBar: React.FC = () => {
                       : 'bg-amber-100 hover:bg-amber-200 text-amber-900 border-amber-300'
                   }`}
                 >
-                  {failedRetryCount > 0 ? `Retry (${failedRetryCount})` : `Queue (${pendingSyncCount})`}
+                  {failedRetryCount > 0 ? `RETRY (${failedRetryCount})` : `PENDING (${pendingSyncCount})`}
                 </button>
               )}
             </div>
@@ -978,32 +1110,11 @@ export const TopBar: React.FC = () => {
           )}
         </div>
 
-        {/* Top-Right ✨ Gemini AI Operational Assistant Button */}
-        <button
-          type="button"
-          id="topbar-gemini-ai-btn"
-          onClick={() => {
-            toggleGeminiAssistant();
-            setIsBellOpen(false);
-            setIsHelpOpen(false);
-            setIsPhcPickerOpen(false);
-            setIsSearchOpen(false);
-          }}
-          aria-expanded={isGeminiAssistantOpen}
-          aria-label="Open Gemini AI Operational Assistant"
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all whitespace-nowrap cursor-pointer shrink-0 shadow-2xs ${
-            isGeminiAssistantOpen
-              ? 'bg-slate-900 text-teal-300 border-teal-500 ring-2 ring-teal-500/30'
-              : 'bg-linear-to-r from-teal-900 via-teal-800 to-emerald-800 hover:from-teal-950 hover:to-emerald-900 text-white border-teal-700'
-          }`}
-          title="Open ✨ Gemini AI Operational Assistant (Inventory, FEFO, Transfers, Alerts & Forecasts)"
+        {/* Centralized Language Selector (English, Hindi — हिन्दी, Punjabi — ਪੰਜਾਬੀ, Tamil — தமிழ், Telugu — తెలుగు, Malayalam — മലയാളം) */}
+        <div
+          className="flex items-center gap-1.5 px-2 py-1 rounded-xl bg-slate-50 border border-slate-200 shrink-0"
+          data-no-translate="true"
         >
-          <Sparkles className="w-3.5 h-3.5 text-amber-300 shrink-0" aria-hidden="true" />
-          <span>✨ Gemini AI</span>
-        </button>
-
-        {/* Centralized Language Selector (English, हिन्दी, தமிழ், తెలుగు) */}
-        <div className="flex items-center gap-1.5 px-2 py-1 rounded-xl bg-slate-50 border border-slate-200 shrink-0">
           <Globe className="w-3.5 h-3.5 text-teal-700 shrink-0" aria-hidden="true" />
           <label htmlFor="ui-language-selector" className="sr-only">
             {t.common.languageLabel}
@@ -1017,63 +1128,39 @@ export const TopBar: React.FC = () => {
           >
             {SUPPORTED_LANGUAGES.map((lang) => (
               <option key={lang.code} value={lang.code}>
-                {lang.nativeLabel}
+                {lang.code === 'en' ? 'English' : `${lang.name} — ${lang.nativeLabel}`}
               </option>
             ))}
           </select>
         </div>
 
         <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
+          <span
+            id="demo-mode-indicator-badge"
+            className="hidden md:inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-50 border border-amber-300 text-amber-950 text-[10px] font-mono font-bold shrink-0"
+            title="Hackathon Demo Mode — Synthetic Data & Demo Account"
+          >
+            <span>Demo Mode · DEMO ACCOUNT · SYNTHETIC DATA</span>
+          </span>
+
           {!inchargeSession ? (
-            <>
-              <span
-                id="demo-readonly-mode-badge"
-                className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-[11px] font-mono font-bold shrink-0"
-                title="Public demonstration mode — read-only exploration is open. Modifying supply-chain data requires authentication."
-              >
-                <Lock className="w-3 h-3 text-amber-700 shrink-0" />
-                <span>{t.common.demoReadOnlyMode}</span>
-              </span>
-
-              <button
-                type="button"
-                id="topbar-demo-access-btn"
-                onClick={() => openAuthModal('demo', selectedPHC)}
-                className="px-2.5 py-1.5 text-xs font-bold text-teal-900 bg-teal-50 hover:bg-teal-100 border border-teal-300 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
-                title="Open Demo Access (No Officer ID or password required)"
-              >
-                <Unlock className="w-3.5 h-3.5 text-teal-700" />
-                <span>Demo Access</span>
-              </button>
-
-              <button
-                type="button"
-                id="topbar-authorized-access-btn"
-                onClick={() => openAuthModal('officer', selectedPHC)}
-                className="px-3 py-1.5 text-xs font-bold text-white bg-teal-700 hover:bg-teal-800 rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
-                title="Authenticate for Admin / Authorized Access to modify supply-chain data"
-              >
-                <KeyRound className="w-3.5 h-3.5 text-teal-200" />
-                <span>{t.common.adminAuthorizedAccess}</span>
-              </button>
-            </>
+            <button
+              type="button"
+              id="topbar-demo-access-btn"
+              onClick={() => openAuthModal('demo', selectedPHC)}
+              className="px-3 py-1.5 text-xs font-bold text-white bg-teal-700 hover:bg-teal-800 rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
+              title="MEDRESQ AI Demo Access (Single Synthetic Demo Account Login)"
+            >
+              <Unlock className="w-3.5 h-3.5 text-teal-200" />
+              <span>MEDRESQ AI Demo Access</span>
+            </button>
           ) : (
             <>
-              {(inchargeSession.loginMode === 'DEMO_ACCESS' || inchargeSession.isDemoAccount) && (
-                <span
-                  id="topbar-demo-account-badge"
-                  className="hidden xl:inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-50 border border-amber-300 text-amber-950 text-[10px] font-mono font-bold shrink-0"
-                  title="Demo Medical Officer Account — Synthetic Data"
-                >
-                  <span>DEMO ACCOUNT · SYNTHETIC DATA</span>
-                </span>
-              )}
-
               <button
                 type="button"
-                onClick={() => openAuthModal('signin', selectedPHC)}
+                onClick={() => openAuthModal('demo', selectedPHC)}
                 className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200 transition-colors cursor-pointer"
-                title="View Authenticated PHC In-Charge Session Profile"
+                title="View MEDRESQ AI Demo Access Session & Switch PHC"
               >
                 <div className="w-7 h-7 rounded-lg bg-linear-to-br from-teal-600 to-emerald-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
                   {(
@@ -1090,11 +1177,7 @@ export const TopBar: React.FC = () => {
                       selectedPHC.medicalOfficerInCharge}
                   </div>
                   <div className="text-[10px] font-mono text-teal-800 font-semibold truncate leading-tight">
-                    {inchargeSession.loginMode === 'DEMO_ACCESS' || inchargeSession.isDemoAccount
-                      ? 'DEMO · '
-                      : ''}
-                    ID: {inchargeSession.officerId} ·{' '}
-                    {selectedPHC.name.replace('Primary Health Centre', 'PHC')}
+                    DEMO · {selectedPHC.name.replace('Primary Health Centre', 'PHC')}
                   </div>
                 </div>
               </button>
@@ -1107,10 +1190,10 @@ export const TopBar: React.FC = () => {
                   if (currentUser) {
                     signOutUser();
                   }
-                  showNotification('Signed out of authorized session. Returned to DEMO / READ-ONLY MODE.');
+                  showNotification('Signed out of Demo Access session.');
                 }}
                 className="px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:text-rose-700 hover:bg-rose-50 rounded-xl border border-slate-200 hover:border-rose-200 transition-colors flex items-center gap-1.5 cursor-pointer"
-                title="Logout PHC In-Charge Session"
+                title="Logout Demo Session"
               >
                 <LogOut className="w-3.5 h-3.5" />
                 <span className="hidden md:inline">Logout</span>

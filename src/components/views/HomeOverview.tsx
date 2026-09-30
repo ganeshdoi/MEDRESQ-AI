@@ -29,7 +29,9 @@ import {
   Wifi,
   WifiOff,
   RefreshCw,
-  BellRing
+  BellRing,
+  Sparkles,
+  BrainCircuit
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext.tsx';
 import { StatusBadge } from '../ui/StatusBadge.tsx';
@@ -68,8 +70,21 @@ export const HomeOverview: React.FC = () => {
     syncOfflineQueue,
     addMockOfflineRecord,
     staff,
+    setIsGeminiAssistantOpen,
+    chatMessages,
+    isChatLoading,
+    language,
     t
   } = useApp();
+
+  const [isGeneratingInsight, setIsGeneratingInsight] = useState<boolean>(false);
+  const [liveAiInsight, setLiveAiInsight] = useState<{
+    phcId: string;
+    language?: string;
+    insight: string;
+    recommended: string;
+    riskLevel: 'CRITICAL' | 'HIGH RISK' | 'WARNING' | 'ATTENTION' | 'HEALTHY';
+  } | null>(null);
 
   const presentStaffTodayCount = staff.filter((s) => s.status === 'PRESENT').length;
 
@@ -179,6 +194,197 @@ export const HomeOverview: React.FC = () => {
     );
   };
 
+  // Dynamic, non-hardcoded operational insight derived from live PHC inventory, forecast & AI backend
+  const topCriticalMed = criticalStockMeds[0];
+  const topWarningMed = warningStockMeds[0];
+  const topSurgeMed = weather.vulnerableMedicines?.[0];
+  const topPendingTransfer = pendingReviewRedistributions[0];
+
+  const derivedRiskLevel: 'CRITICAL' | 'HIGH RISK' | 'WARNING' | 'ATTENTION' | 'HEALTHY' =
+    criticalStockMeds.length > 0
+      ? 'CRITICAL'
+      : (topSurgeMed && topSurgeMed.demandSurgePercent >= 35) || warningStockMeds.length >= 2
+      ? 'HIGH RISK'
+      : warningStockMeds.length > 0 || expiringSoonMeds.length > 0
+      ? 'WARNING'
+      : pendingReviewRedistributions.length > 0
+      ? 'ATTENTION'
+      : 'HEALTHY';
+
+  const derivedInsightText = (() => {
+    if (topCriticalMed) {
+      const surgeAddon = topSurgeMed
+        ? ` (+${topSurgeMed.demandSurgePercent}% ${weather.seasonalProfile})`
+        : '';
+      const byLang: Record<string, string> = {
+        en: `${topCriticalMed.name} stock at ${selectedPHC.name} is critically low (${topCriticalMed.currentStock.toLocaleString()} ${topCriticalMed.unit} vs ${topCriticalMed.minStockLevel.toLocaleString()} ${topCriticalMed.unit} threshold)${
+          topSurgeMed
+            ? ` alongside a +${topSurgeMed.demandSurgePercent}% ${weather.seasonalProfile.toLowerCase()} demand signal.`
+            : '.'
+        }`,
+        hi: `${selectedPHC.name} में ${topCriticalMed.name} का स्टॉक गंभीर रूप से कम है (${topCriticalMed.currentStock.toLocaleString()} ${topCriticalMed.unit} बनाम न्यूनतम ${topCriticalMed.minStockLevel.toLocaleString()} ${topCriticalMed.unit} सीमा)${surgeAddon}।`,
+        pa: `${selectedPHC.name} ਵਿੱਚ ${topCriticalMed.name} ਦਾ ਸਟਾਕ ਗੰਭੀਰ ਰੂਪ ਵਿੱਚ ਘੱਟ ਹੈ (${topCriticalMed.currentStock.toLocaleString()} ${topCriticalMed.unit} ਬਨਾਮ ਘੱਟੋ-ਘੱਟ ${topCriticalMed.minStockLevel.toLocaleString()} ${topCriticalMed.unit} ਸੀਮਾ)${surgeAddon}।`,
+        ta: `${selectedPHC.name} நிலையத்தில் ${topCriticalMed.name} இருப்பு மிகவும் குறைவாக உள்ளது (${topCriticalMed.currentStock.toLocaleString()} ${topCriticalMed.unit} vs குறைந்தபட்சம் ${topCriticalMed.minStockLevel.toLocaleString()} ${topCriticalMed.unit} வரம்பு)${surgeAddon}.`,
+        te: `${selectedPHC.name}లో ${topCriticalMed.name} నిల్వ అత్యంత తక్కువగా ఉంది (${topCriticalMed.currentStock.toLocaleString()} ${topCriticalMed.unit} vs కనీసం ${topCriticalMed.minStockLevel.toLocaleString()} ${topCriticalMed.unit} పరిమితి)${surgeAddon}.`,
+        ml: `${selectedPHC.name}-ൽ ${topCriticalMed.name} സ്റ്റോക്ക് ഗുരുതരമായി കുറവാണ് (${topCriticalMed.currentStock.toLocaleString()} ${topCriticalMed.unit} vs കുറഞ്ഞത് ${topCriticalMed.minStockLevel.toLocaleString()} ${topCriticalMed.unit} പരിധി)${surgeAddon}.`
+      };
+      return byLang[language] || byLang.en;
+    }
+    if (topWarningMed) {
+      const byLang: Record<string, string> = {
+        en: `Demand signals at ${selectedPHC.name} indicate reduced safety buffer for ${topWarningMed.name} (${topWarningMed.currentStock.toLocaleString()} ${topWarningMed.unit} remaining).`,
+        hi: `${selectedPHC.name} पर मांग संकेतों के अनुसार ${topWarningMed.name} का सुरक्षा बफर कम हो गया है (${topWarningMed.currentStock.toLocaleString()} ${topWarningMed.unit} शेष)।`,
+        pa: `${selectedPHC.name} ਤੇ ਮੰਗ ਸੰਕੇਤਾਂ ਅਨੁਸਾਰ ${topWarningMed.name} ਦਾ ਸੁਰੱਖਿਆ ਬਫਰ ਘੱਟ ਗਿਆ ਹੈ (${topWarningMed.currentStock.toLocaleString()} ${topWarningMed.unit} ਬਾਕੀ)।`,
+        ta: `${selectedPHC.name} நிலையத்தில் ${topWarningMed.name} மருந்தின் பாதுகாப்பு இருப்பு குறைந்துள்ளது (${topWarningMed.currentStock.toLocaleString()} ${topWarningMed.unit} மீதமுள்ளது).`,
+        te: `${selectedPHC.name} వద్ద డిమాండ్ సంకేతాల ప్రకారం ${topWarningMed.name} భద్రతా బఫర్ తగ్గింది (${topWarningMed.currentStock.toLocaleString()} ${topWarningMed.unit} మిగిలి ఉంది).`,
+        ml: `${selectedPHC.name}-ലെ ഡിമാൻഡ് സിഗ്നലുകൾ ${topWarningMed.name}-ന്റെ സുരക്ഷാ ബഫർ കുറഞ്ഞതായി കാണിക്കുന്നു (${topWarningMed.currentStock.toLocaleString()} ${topWarningMed.unit} ബാക്കി).`
+      };
+      return byLang[language] || byLang.en;
+    }
+    if (topSurgeMed) {
+      const byLang: Record<string, string> = {
+        en: `${weather.seasonalProfile} conditions (${weather.temperatureC}°C) project a +${topSurgeMed.demandSurgePercent}% demand surge for ${topSurgeMed.medicineName}.`,
+        hi: `${weather.seasonalProfile} मौसम (${weather.temperatureC}°C) के कारण ${topSurgeMed.medicineName} की मांग में +${topSurgeMed.demandSurgePercent}% वृद्धि का अनुमान है।`,
+        pa: `${weather.seasonalProfile} ਮੌਸਮ (${weather.temperatureC}°C) ਕਾਰਨ ${topSurgeMed.medicineName} ਦੀ ਮੰਗ ਵਿੱਚ +${topSurgeMed.demandSurgePercent}% ਵਾਧੇ ਦਾ ਅਨੁਮਾਨ ਹੈ।`,
+        ta: `${weather.seasonalProfile} வானிலை (${weather.temperatureC}°C) காரணமாக ${topSurgeMed.medicineName} தேவை +${topSurgeMed.demandSurgePercent}% அதிகரிக்கும் எனக் கணிக்கப்பட்டுள்ளது.`,
+        te: `${weather.seasonalProfile} వాతావరణం (${weather.temperatureC}°C) కారణంగా ${topSurgeMed.medicineName} డిమాండ్ +${topSurgeMed.demandSurgePercent}% పెరుగుతుందని అంచనా.`,
+        ml: `${weather.seasonalProfile} കാലാവസ്ഥ (${weather.temperatureC}°C) കാരണം ${topSurgeMed.medicineName} ഡിമാൻഡ് +${topSurgeMed.demandSurgePercent}% വർദ്ധിക്കുമെന്ന് പ്രവചിക്കുന്നു.`
+      };
+      return byLang[language] || byLang.en;
+    }
+    const byLang: Record<string, string> = {
+      en: `All ${medicines.length} tracked medicines at ${selectedPHC.name} currently meet their safety stock thresholds.`,
+      hi: `${selectedPHC.name} में सभी ${medicines.length} दवाएं वर्तमान में अपनी सुरक्षा स्टॉक सीमा को पूरा करती हैं।`,
+      pa: `${selectedPHC.name} ਵਿੱਚ ਸਾਰੀਆਂ ${medicines.length} ਦਵਾਈਆਂ ਵਰਤਮਾਨ ਵਿੱਚ ਆਪਣੀ ਸੁਰੱਖਿਆ ਸਟਾਕ ਸੀਮਾ ਨੂੰ ਪੂਰਾ ਕਰਦੀਆਂ ਹਨ।`,
+      ta: `${selectedPHC.name} நிலையத்தில் உள்ள அனைத்து ${medicines.length} மருந்துகளும் பாதுகாப்பான இருப்பு வரம்பிற்குள் உள்ளன.`,
+      te: `${selectedPHC.name}లోని మొత్తం ${medicines.length} మందులు ప్రస్తుతం భద్రతా నిల్వ పరిమితిలో ఉన్నాయి.`,
+      ml: `${selectedPHC.name}-ലെ എല്ലാ ${medicines.length} മരുന്നുകളും സുരക്ഷാ സ്റ്റോക്ക് പരിധിക്കുള്ളിലാണ്.`
+    };
+    return byLang[language] || byLang.en;
+  })();
+
+  const derivedRecommendedAction = (() => {
+    if (topCriticalMed) {
+      if (topPendingTransfer) {
+        const byLang: Record<string, string> = {
+          en: `Review ${topCriticalMed.name} buffer and approve pending ${topPendingTransfer.recommendedTransferQuantity}-unit lateral transfer from ${topPendingTransfer.sourcePHCName || 'peer PHC'}.`,
+          hi: `${topCriticalMed.name} बफर की समीक्षा करें और ${topPendingTransfer.sourcePHCName || 'साथी PHC'} से लंबित ${topPendingTransfer.recommendedTransferQuantity}-यूनिट ट्रांसफर स्वीकृत करें।`,
+          pa: `${topCriticalMed.name} ਬਫਰ ਦੀ ਸਮੀਖਿਆ ਕਰੋ ਅਤੇ ${topPendingTransfer.sourcePHCName || 'ਸਾਥੀ PHC'} ਤੋਂ ਬਕਾਇਆ ${topPendingTransfer.recommendedTransferQuantity}-ਯੂਨਿਟ ਟ੍ਰਾਂਸਫਰ ਮਨਜ਼ੂਰ ਕਰੋ।`,
+          ta: `${topCriticalMed.name} இருப்பைச் சரிபார்த்து ${topPendingTransfer.sourcePHCName || 'அருகிலுள்ள PHC'}-இலிருந்து ${topPendingTransfer.recommendedTransferQuantity} அலகு இடமாற்றத்தை அங்கீகரிக்கவும்.`,
+          te: `${topCriticalMed.name} బఫర్‌ను సమీక్షించి ${topPendingTransfer.sourcePHCName || 'సమీప PHC'} నుండి ${topPendingTransfer.recommendedTransferQuantity}-యూనిట్ల బదిలీని ఆమోదించండి.`,
+          ml: `${topCriticalMed.name} ബഫർ പരിശോധിച്ച് ${topPendingTransfer.sourcePHCName || 'സമീപ PHC'}-ൽ നിന്നുള്ള ${topPendingTransfer.recommendedTransferQuantity} യൂണിറ്റ് ട്രാൻസ്ഫർ അംഗീകരിക്കുക.`
+        };
+        return byLang[language] || byLang.en;
+      }
+      const byLang: Record<string, string> = {
+        en: `Place an urgent replenishment indent for ${topCriticalMed.name} and verify FEFO buffers.`,
+        hi: `${topCriticalMed.name} के लिए तत्काल पुनःपूर्ति ऑर्डर दर्ज करें और FEFO बफर सत्यापित करें।`,
+        pa: `${topCriticalMed.name} ਲਈ ਤੁਰੰਤ ਰੀਸਟਾਕ ਆਰਡਰ ਦਰਜ ਕਰੋ ਅਤੇ FEFO ਬਫਰ ਦੀ ਪੁਸ਼ਟੀ ਕਰੋ।`,
+        ta: `${topCriticalMed.name} மருந்திற்கு அவசர ஆர்டர் பதிவு செய்து FEFO இருப்பைச் சரிபார்க்கவும்.`,
+        te: `${topCriticalMed.name} కోసం అత్యవసర రీస్టాక్ ఆర్డర్ ఉంచి FEFO నిల్వలను ధృవీకరించండి.`,
+        ml: `${topCriticalMed.name}-ന് അടിയന്തര റീസ്റ്റോക്ക് ഓർഡർ നൽകുകയും FEFO ബഫർ പരിശോധിക്കുകയും ചെയ്യുക.`
+      };
+      return byLang[language] || byLang.en;
+    }
+    if (topWarningMed) {
+      const byLang: Record<string, string> = {
+        en: `Review current ${topWarningMed.name} safety buffer and replenishment status before ${weather.seasonalProfile.toLowerCase()} peak.`,
+        hi: `मौसमी मांग शिखर से पहले वर्तमान ${topWarningMed.name} सुरक्षा बफर और पुनःपूर्ति स्थिति की समीक्षा करें।`,
+        pa: `ਮੌਸਮੀ ਮੰਗ ਸਿਖਰ ਤੋਂ ਪਹਿਲਾਂ ਮੌਜੂਦਾ ${topWarningMed.name} ਸੁਰੱਖਿਆ ਬਫਰ ਅਤੇ ਰੀਸਟਾਕ ਸਥਿਤੀ ਦੀ ਸਮੀਖਿਆ ਕਰੋ।`,
+        ta: `பருவகால தேவை அதிகரிப்புக்கு முன் தற்போதைய ${topWarningMed.name} பாதுகாப்பு இருப்பைச் சரிபார்க்கவும்.`,
+        te: `సీజనల్ డిమాండ్ గరిష్టానికి ముందే ప్రస్తుత ${topWarningMed.name} భద్రతా నిల్వ మరియు రీస్టాక్ స్థితిని సమీక్షించండి.`,
+        ml: `സീസണൽ ഡിമാൻഡ് ഉയരുന്നതിന് മുമ്പ് നിലവിലെ ${topWarningMed.name} സുരക്ഷാ ബഫറും റീസ്റ്റോക്ക് നിലയും പരിശോധിക്കുക.`
+      };
+      return byLang[language] || byLang.en;
+    }
+    if (topSurgeMed) {
+      const byLang: Record<string, string> = {
+        en: `Verify ${topSurgeMed.medicineName} buffer stock and pre-position seasonal surge supplies.`,
+        hi: `${topSurgeMed.medicineName} बफर स्टॉक सत्यापित करें और मौसमी आपूर्ति पहले से तैयार रखें।`,
+        pa: `${topSurgeMed.medicineName} ਬਫਰ ਸਟਾਕ ਦੀ ਪੁਸ਼ਟੀ ਕਰੋ ਅਤੇ ਮੌਸਮੀ ਸਪਲਾਈ ਪਹਿਲਾਂ ਤੋਂ ਤਿਆਰ ਰੱਖੋ।`,
+        ta: `${topSurgeMed.medicineName} பாதுகாப்பு இருப்பைச் சரிபார்த்து பருவகால மருந்துகளைத் தயாராக வைக்கவும்.`,
+        te: `${topSurgeMed.medicineName} బఫర్ నిల్వను ధృవీకరించి సీజనల్ మందులను సిద్ధంగా ఉంచండి.`,
+        ml: `${topSurgeMed.medicineName} ബഫർ സ്റ്റോക്ക് പരിശോധിച്ച് സീസണൽ മരുന്നുകൾ മുൻകൂട്ടി കരുതുക.`
+      };
+      return byLang[language] || byLang.en;
+    }
+    const byLang: Record<string, string> = {
+      en: `Continue routine FEFO dispensing and daily cold-chain ILR monitoring.`,
+      hi: `नियमित FEFO वितरण और दैनिक कोल्ड-चेन ILR निगरानी जारी रखें।`,
+      pa: `ਨਿਯਮਤ FEFO ਵੰਡ ਅਤੇ ਰੋਜ਼ਾਨਾ ਕੋਲਡ-ਚੇਨ ILR ਨਿਗਰਾਨੀ ਜਾਰੀ ਰੱਖੋ।`,
+      ta: `வழக்கமான FEFO விநியோகம் மற்றும் தினசரி குளிர்பதன (ILR) கண்காணிப்பைத் தொடரவும்.`,
+      te: `సాధారణ FEFO పంపిణీ మరియు రోజువారీ కోల్డ్-చైన్ ILR పర్యవేక్షణను కొనసాగించండి.`,
+      ml: `സാധാരണ FEFO വിതരണവും ദൈനംദിന കോൾഡ്-ചെയിൻ ILR നിരീക്ഷണവും തുടരുക.`
+    };
+    return byLang[language] || byLang.en;
+  })();
+
+  const activeInsight =
+    liveAiInsight && liveAiInsight.phcId === selectedPHC.id && liveAiInsight.language === language
+      ? liveAiInsight
+      : {
+          phcId: selectedPHC.id,
+          language,
+          insight: derivedInsightText,
+          recommended: derivedRecommendedAction,
+          riskLevel: derivedRiskLevel
+        };
+
+  const handleRefreshGeminiInsight = async () => {
+    if (isGeneratingInsight) return;
+    setIsGeneratingInsight(true);
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [
+            {
+              role: 'user',
+              text: `Provide a 1-sentence operational risk insight and a 1-sentence recommended action for ${selectedPHC.name} given: ${derivedInsightText} Format strictly as: INSIGHT: <sentence> | RECOMMENDED: <sentence>`
+            }
+          ],
+          persona: 'clinical_officer',
+          taskComplexity: 'fast',
+          language,
+          phcId: selectedPHC.id
+        })
+      });
+      if (response.ok) {
+        const data = await response.json();
+        const rawText = String(data.reply || data.text || '').trim();
+        if (rawText) {
+          const parts = rawText.split('|');
+          const parsedInsight = parts[0]?.replace(/^INSIGHT:\s*/i, '').trim() || derivedInsightText;
+          const parsedRec =
+            parts[1]?.replace(/^RECOMMENDED:\s*/i, '').trim() || derivedRecommendedAction;
+          setLiveAiInsight({
+            phcId: selectedPHC.id,
+            language,
+            insight: parsedInsight,
+            recommended: parsedRec,
+            riskLevel: derivedRiskLevel
+          });
+        }
+      }
+    } catch {
+      // Keep live telemetry-derived insight if offline
+    } finally {
+      setIsGeneratingInsight(false);
+    }
+  };
+
+  const handleOpenAskGeminiWithContext = (customPrompt?: string) => {
+    const promptToUse =
+      customPrompt ||
+      `Analyze ${selectedPHC.name}: ${activeInsight.insight} What should the Medical Officer prioritize right now?`;
+    window.dispatchEvent(
+      new CustomEvent('medresq:ask-gemini', {
+        detail: { prompt: promptToUse, autoSend: true }
+      })
+    );
+  };
+
   return (
     <div className="space-y-6">
       {/* 1. Modern, Friendly PHC Incharge Welcome & Quick-Start Hub */}
@@ -207,6 +413,16 @@ export const HomeOverview: React.FC = () => {
                 </span>
               </div>
 
+              <div className="flex flex-wrap items-center gap-2.5 pt-0.5">
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-white/15 border border-white/25 text-white font-extrabold tracking-wider text-xs">
+                  <Sparkles className="w-3.5 h-3.5 text-teal-300" />
+                  MEDRESQ AI
+                </span>
+                <span className="text-xs sm:text-sm font-bold text-teal-200 tracking-wide">
+                  “Smart Health • Smart Supply Chain”
+                </span>
+              </div>
+
               <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
                 {selectedPHC.name} — Operational Supply &amp; Forecast Command Hub
               </h1>
@@ -224,8 +440,17 @@ export const HomeOverview: React.FC = () => {
               </p>
             </div>
 
-            {/* Bound PHC Session Status / Admin Authorized Access */}
+            {/* Bound PHC Session Status / Admin Authorized Access + Ask Gemini CTA */}
             <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => handleOpenAskGeminiWithContext('What should I prioritize today?')}
+                className="px-3.5 py-2 rounded-xl bg-linear-to-r from-indigo-500 via-teal-500 to-emerald-500 hover:from-indigo-600 hover:via-teal-600 hover:to-emerald-600 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm ring-1 ring-white/30 transition-all cursor-pointer"
+                title="Open Ask Gemini AI Command Center"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-white animate-pulse" />
+                <span>Ask Gemini</span>
+              </button>
               <button
                 type="button"
                 onClick={() => openAuthModal('signin', selectedPHC)}
@@ -240,6 +465,66 @@ export const HomeOverview: React.FC = () => {
                 </span>
               </button>
             </div>
+          </div>
+
+          {/* SENSE -> THINK -> ACT Operational Relationship Strip (Hackathon Demo Optimization) */}
+          <div className="mt-4 pt-4 border-t border-white/15 grid grid-cols-1 md:grid-cols-3 gap-2.5">
+            <button
+              type="button"
+              onClick={() => setActiveModule('medicine')}
+              className="flex items-start gap-3 p-3 rounded-xl bg-white/8 hover:bg-white/15 border border-white/15 text-left transition-all cursor-pointer group"
+            >
+              <div className="px-2 py-1 rounded-md bg-emerald-400/20 border border-emerald-300/40 text-emerald-200 font-mono text-[10px] font-extrabold uppercase tracking-wider shrink-0 mt-0.5">
+                1. SENSE
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-bold text-white flex items-center justify-between gap-1">
+                  <span>Real-Time PHC Signals</span>
+                  <ArrowRight className="w-3.5 h-3.5 text-emerald-300 group-hover:translate-x-0.5 transition-transform shrink-0" />
+                </div>
+                <p className="text-[11px] text-emerald-100/85 mt-0.5 leading-snug">
+                  Real-time PHC inventory, FEFO batches, OCR registers &amp; threshold alerts ({medicines.length} items tracked).
+                </p>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveModule('preparedness')}
+              className="flex items-start gap-3 p-3 rounded-xl bg-white/8 hover:bg-white/15 border border-white/15 text-left transition-all cursor-pointer group"
+            >
+              <div className="px-2 py-1 rounded-md bg-indigo-400/25 border border-indigo-300/40 text-indigo-200 font-mono text-[10px] font-extrabold uppercase tracking-wider shrink-0 mt-0.5">
+                2. THINK
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-bold text-white flex items-center justify-between gap-1">
+                  <span>Gemini Intelligence</span>
+                  <ArrowRight className="w-3.5 h-3.5 text-indigo-300 group-hover:translate-x-0.5 transition-transform shrink-0" />
+                </div>
+                <p className="text-[11px] text-emerald-100/85 mt-0.5 leading-snug">
+                  Gemini-powered analysis and regional demand/surge intelligence ({weather.seasonalProfile} · {weather.temperatureC}°C).
+                </p>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveModule('orders')}
+              className="flex items-start gap-3 p-3 rounded-xl bg-white/8 hover:bg-white/15 border border-white/15 text-left transition-all cursor-pointer group"
+            >
+              <div className="px-2 py-1 rounded-md bg-amber-400/20 border border-amber-300/40 text-amber-200 font-mono text-[10px] font-extrabold uppercase tracking-wider shrink-0 mt-0.5">
+                3. ACT
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-bold text-white flex items-center justify-between gap-1">
+                  <span>Replenish &amp; Transfer</span>
+                  <ArrowRight className="w-3.5 h-3.5 text-amber-300 group-hover:translate-x-0.5 transition-transform shrink-0" />
+                </div>
+                <p className="text-[11px] text-emerald-100/85 mt-0.5 leading-snug">
+                  Replenishment indents, peer PHC transfers &amp; Officer-approved operational recommendations.
+                </p>
+              </div>
+            </button>
           </div>
         </div>
 
@@ -408,38 +693,201 @@ export const HomeOverview: React.FC = () => {
         </div>
       </div>
 
-      {/* 2. Critical Alert Banner (Only when urgent alerts exist) */}
-      {criticalAlerts.length > 0 && (
+      {/* 2. Top Command Row: Critical Alert Banner + Gemini Operational Insight Card */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* Gemini Operational Insight Card (Requirement 5) */}
+        <div
+          className={`lg:col-span-7 rounded-2xl border p-4 sm:p-5 shadow-xs transition-all flex flex-col justify-between gap-3 ${
+            activeInsight.riskLevel === 'CRITICAL'
+              ? 'bg-linear-to-br from-rose-50/90 via-white to-orange-50/40 border-rose-200'
+              : activeInsight.riskLevel === 'HIGH RISK'
+              ? 'bg-linear-to-br from-orange-50/90 via-white to-amber-50/40 border-orange-200'
+              : activeInsight.riskLevel === 'WARNING'
+              ? 'bg-linear-to-br from-amber-50/80 via-white to-teal-50/30 border-amber-200'
+              : 'bg-linear-to-br from-indigo-50/60 via-white to-teal-50/40 border-teal-200'
+          }`}
+        >
+          <div className="space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-slate-900 text-teal-300 flex items-center justify-center shrink-0 shadow-2xs">
+                  <Sparkles className="w-4 h-4" />
+                </div>
+                <span className="text-xs font-mono font-extrabold uppercase tracking-wider text-slate-900">
+                  GEMINI OPERATIONAL INSIGHT
+                </span>
+                <StatusBadge
+                  status={activeInsight.riskLevel}
+                  text={
+                    activeInsight.riskLevel === 'CRITICAL'
+                      ? '⚠ Critical Risk'
+                      : activeInsight.riskLevel === 'HIGH RISK'
+                      ? '⚠ High Risk'
+                      : activeInsight.riskLevel === 'WARNING'
+                      ? '⚠ Warning'
+                      : activeInsight.riskLevel === 'ATTENTION'
+                      ? 'Attention'
+                      : 'Healthy / OK'
+                  }
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={handleRefreshGeminiInsight}
+                disabled={isGeneratingInsight}
+                className="text-[11px] font-mono font-bold text-teal-800 hover:text-teal-950 bg-white/90 hover:bg-white px-2.5 py-1 rounded-lg border border-slate-200/90 flex items-center gap-1 transition-all cursor-pointer disabled:opacity-50"
+                title="Synthesize fresh insight using Gemini AI backend"
+              >
+                <RefreshCw className={`w-3 h-3 text-teal-600 ${isGeneratingInsight ? 'animate-spin' : ''}`} />
+                <span>{isGeneratingInsight ? 'Analyzing…' : 'Refresh AI'}</span>
+              </button>
+            </div>
+
+            {isGeneratingInsight || isChatLoading ? (
+              <div className="py-2 flex items-center gap-2 text-xs text-teal-900 font-medium">
+                <RefreshCw className="w-3.5 h-3.5 text-teal-600 animate-spin shrink-0" />
+                <span>Gemini is analyzing PHC context…</span>
+              </div>
+            ) : (
+              <>
+                <p className="text-sm font-bold text-slate-900 leading-snug">
+                  “{activeInsight.insight}”
+                </p>
+                <div className="text-xs text-slate-700 bg-white/80 rounded-xl p-2.5 border border-slate-200/80">
+                  <span className="font-mono text-[10px] font-bold uppercase tracking-wider text-teal-800 block mb-0.5">
+                    Recommended:
+                  </span>
+                  <span className="font-medium text-slate-800">
+                    “{activeInsight.recommended}”
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="pt-1 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[11px] font-mono text-slate-500">
+              Grounded in {selectedPHC.name} ({selectedPHC.code}) live telemetry
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  handleOpenAskGeminiWithContext(
+                    `Explain the current operational risks at ${selectedPHC.name} and recommend priority actions.`
+                  )
+                }
+                className="px-3.5 py-2 rounded-xl bg-linear-to-r from-indigo-600 via-teal-600 to-emerald-600 hover:from-indigo-700 hover:via-teal-700 hover:to-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-teal-200" />
+                <span>Ask Gemini</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Critical / Active Risk Alert Summary Card (Requirement 3) */}
         <div
           role="region"
           aria-label="Urgent Facility Alerts"
-          className="bg-rose-50 border border-rose-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+          className={`lg:col-span-5 rounded-2xl border p-4 sm:p-5 flex flex-col justify-between gap-3 shadow-xs ${
+            criticalAlerts.length > 0 || criticalStockMeds.length > 0
+              ? 'bg-rose-50/90 border-rose-200'
+              : warningStockMeds.length > 0
+              ? 'bg-amber-50/90 border-amber-200'
+              : 'bg-emerald-50/80 border-emerald-200'
+          }`}
         >
-          <div className="flex items-start gap-3">
-            <AlertTriangle
-              className="w-5 h-5 text-rose-600 shrink-0 mt-0.5"
-              aria-hidden="true"
-            />
-            <div>
-              <div className="font-bold text-sm text-rose-950">
-                Urgent Today: {criticalAlerts[0].title}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <StatusBadge
+                status={
+                  criticalAlerts.length > 0 || criticalStockMeds.length > 0
+                    ? 'CRITICAL'
+                    : warningStockMeds.length > 0
+                    ? 'WARNING'
+                    : 'HEALTHY'
+                }
+                text={
+                  criticalAlerts.length > 0 || criticalStockMeds.length > 0
+                    ? 'Critical Stock Risk'
+                    : warningStockMeds.length > 0
+                    ? 'Safety Buffer Warning'
+                    : 'All Thresholds Healthy'
+                }
+              />
+              <span className="text-[11px] font-mono font-bold text-slate-600">
+                {criticalStockMeds.length} Critical · {warningStockMeds.length} Warning
+              </span>
+            </div>
+
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle
+                className={`w-5 h-5 shrink-0 mt-0.5 ${
+                  criticalAlerts.length > 0 || criticalStockMeds.length > 0
+                    ? 'text-rose-600'
+                    : warningStockMeds.length > 0
+                    ? 'text-amber-600'
+                    : 'text-emerald-600'
+                }`}
+                aria-hidden="true"
+              />
+              <div>
+                <div className="font-bold text-sm text-slate-900">
+                  {criticalAlerts.length > 0
+                    ? criticalAlerts[0].title
+                    : topCriticalMed
+                    ? `${topCriticalMed.name} stock is below the configured safety threshold.`
+                    : topWarningMed
+                    ? `${topWarningMed.name} is approaching minimum safety buffer.`
+                    : 'All essential medicines meet safety thresholds.'}
+                </div>
+                <p className="text-xs text-slate-700 mt-0.5">
+                  {criticalAlerts.length > 0
+                    ? criticalAlerts[0].description
+                    : topCriticalMed
+                    ? `Current usable stock is ${topCriticalMed.currentStock.toLocaleString()} ${topCriticalMed.unit} against a minimum requirement of ${topCriticalMed.minStockLevel.toLocaleString()} ${topCriticalMed.unit}.`
+                    : 'Real-time threshold monitoring active across all PHC batches.'}
+                </p>
               </div>
-              <p className="text-xs text-rose-900 mt-0.5">
-                {criticalAlerts[0].description}
-              </p>
+            </div>
+
+            <div className="text-xs bg-white/85 rounded-xl p-2.5 border border-slate-200/80">
+              <span className="font-mono text-[10px] font-bold uppercase tracking-wider text-slate-600 block">
+                Recommended Action:
+              </span>
+              <span className="font-semibold text-slate-900">
+                Review replenishment options or approve peer PHC stock transfer.
+              </span>
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setActiveModule('alerts')}
-            className="text-xs font-semibold text-rose-950 bg-white hover:bg-rose-100 px-3.5 py-2 rounded-lg border border-rose-300 flex items-center justify-center gap-1.5 shrink-0 transition-colors whitespace-nowrap cursor-pointer"
-          >
-            <span>Resolve Alert ({criticalAlerts.length})</span>
-            <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
-          </button>
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() =>
+                handleOpenAskGeminiWithContext(
+                  'Why is this medicine showing a warning and what should I reorder first?'
+                )
+              }
+              className="text-xs font-bold text-teal-800 hover:text-teal-950 bg-white hover:bg-teal-50 px-3 py-1.5 rounded-lg border border-teal-200 flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-teal-600" />
+              <span>Explain Risk with AI</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveModule('alerts')}
+              className="text-xs font-semibold text-rose-950 bg-white hover:bg-rose-100 px-3.5 py-1.5 rounded-lg border border-rose-300 flex items-center justify-center gap-1.5 shrink-0 transition-colors whitespace-nowrap cursor-pointer"
+            >
+              <span>Resolve Alerts ({activeAlertsList.length})</span>
+              <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+          </div>
         </div>
-      )}
+      </div>
 
       {/* 3. Four Simple At-a-Glance Health Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -1028,23 +1476,51 @@ export const HomeOverview: React.FC = () => {
             </div>
           </div>
 
-          {/* SECTION 5: OFFLINE / SYNC STATUS */}
+          {/* SECTION 5: OFFLINE / SYNC STATUS (Requirement 8) */}
           <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 space-y-3">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 {isOfflineMode ? (
                   <WifiOff className="w-4 h-4 text-amber-600" />
+                ) : isQueueSyncing ? (
+                  <RefreshCw className="w-4 h-4 text-sky-600 animate-spin" />
                 ) : (
                   <Wifi className="w-4 h-4 text-emerald-600" />
                 )}
                 <div>
-                  <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-slate-500 block">
-                    Priority 5 · Connectivity &amp; Offline Queue
-                  </span>
-                  <h2 className="text-sm font-bold text-slate-900">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-slate-500">
+                      Priority 5 · Offline-First Queue
+                    </span>
+                    <StatusBadge
+                      status={
+                        isOfflineMode
+                          ? 'OFFLINE'
+                          : isQueueSyncing
+                          ? 'SYNCING'
+                          : failedOfflineItems.length > 0
+                          ? 'FAILED / RETRY'
+                          : queuedOrFailedOfflineItems.length > 0
+                          ? 'PENDING'
+                          : 'ONLINE'
+                      }
+                      text={
+                        isOfflineMode
+                          ? 'OFFLINE'
+                          : isQueueSyncing
+                          ? 'SYNCING'
+                          : failedOfflineItems.length > 0
+                          ? 'FAILED / RETRY'
+                          : queuedOrFailedOfflineItems.length > 0
+                          ? 'PENDING'
+                          : 'ONLINE'
+                      }
+                    />
+                  </div>
+                  <h2 className="text-sm font-bold text-slate-900 mt-0.5">
                     {isOfflineMode ? 'Offline Buffer Mode Active' : 'Online Real-Time Sync'} ·{' '}
-                    {queuedOrFailedOfflineItems.length} Queued
-                    {failedOfflineItems.length > 0 ? ` (${failedOfflineItems.length} Failed)` : ''}
+                    {queuedOrFailedOfflineItems.length} Pending
+                    {failedOfflineItems.length > 0 ? ` · ${failedOfflineItems.length} Failed` : ''}
                   </h2>
                 </div>
               </div>
@@ -1053,10 +1529,10 @@ export const HomeOverview: React.FC = () => {
                 <button
                   type="button"
                   onClick={toggleOfflineMode}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold border cursor-pointer ${
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold border transition-colors cursor-pointer ${
                     isOfflineMode
-                      ? 'bg-amber-100 text-amber-950 border-amber-300'
-                      : 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                      ? 'bg-amber-100 text-amber-950 border-amber-300 hover:bg-amber-200'
+                      : 'bg-emerald-50 text-emerald-900 border-emerald-200 hover:bg-emerald-100'
                   }`}
                 >
                   {isOfflineMode ? 'Go Online' : 'Simulate Offline'}
@@ -1074,6 +1550,34 @@ export const HomeOverview: React.FC = () => {
                 )}
               </div>
             </div>
+
+            {failedOfflineItems.length > 0 && (
+              <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-950 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <strong className="font-bold">FAILED / RETRY ({failedOfflineItems.length}):</strong>{' '}
+                  <span>
+                    Transient sync error detected. Records remain safely stored in local storage.
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => void syncOfflineQueue()}
+                    disabled={isQueueSyncing}
+                    className="px-2.5 py-1 rounded bg-rose-700 hover:bg-rose-800 text-white text-[11px] font-bold cursor-pointer"
+                  >
+                    Retry Now
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveModule('offline-queue')}
+                    className="px-2 py-1 rounded bg-white border border-rose-300 text-rose-900 text-[11px] font-semibold cursor-pointer"
+                  >
+                    Inspect
+                  </button>
+                </div>
+              </div>
+            )}
 
             {offlineQueue.length === 0 ? (
               <div className="p-3 rounded-lg bg-slate-50 border border-slate-200/80 flex items-center justify-between text-xs text-slate-600">
@@ -1103,15 +1607,23 @@ export const HomeOverview: React.FC = () => {
                       </div>
                     </div>
                     <span
-                      className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold shrink-0 ${
+                      className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border shrink-0 ${
                         qItem.status === 'SYNCED'
-                          ? 'bg-emerald-100 text-emerald-900'
+                          ? 'bg-emerald-50 text-emerald-900 border-emerald-300'
+                          : qItem.status === 'SYNCING'
+                          ? 'bg-sky-50 text-sky-900 border-sky-300'
                           : qItem.status === 'FAILED_RETRY'
-                          ? 'bg-rose-100 text-rose-900'
-                          : 'bg-amber-100 text-amber-900'
+                          ? 'bg-rose-50 text-rose-900 border-rose-300'
+                          : 'bg-amber-50 text-amber-900 border-amber-300'
                       }`}
                     >
-                      {qItem.status}
+                      {qItem.status === 'SYNCED'
+                        ? 'SYNCED'
+                        : qItem.status === 'SYNCING'
+                        ? 'SYNCING'
+                        : qItem.status === 'FAILED_RETRY'
+                        ? 'FAILED / RETRY'
+                        : 'PENDING'}
                     </span>
                   </div>
                 ))}
@@ -1121,10 +1633,10 @@ export const HomeOverview: React.FC = () => {
                   </span>
                   <button
                     type="button"
-                    onClick={() => setActiveModule('alerts')}
+                    onClick={() => setActiveModule('offline-queue')}
                     className="font-bold text-teal-700 hover:text-teal-900 cursor-pointer"
                   >
-                    Manage Offline Queue →
+                    Open Offline Queue →
                   </button>
                 </div>
               </div>

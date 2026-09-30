@@ -5,7 +5,7 @@
       "description": "Authenticated user profile and role metadata for MEDRESQ AI",
       "type": "object",
       "properties": {
-        "id": { "type": "string", "maxLength": 128 },
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "email": { "type": "string", "maxLength": 256 },
         "displayName": { "type": "string", "maxLength": 128 },
         "photoURL": { "type": "string", "maxLength": 512 },
@@ -20,28 +20,31 @@
       "description": "Pharmacy and medicine replenishment requisition order document",
       "type": "object",
       "properties": {
-        "id": { "type": "string", "maxLength": 64 },
+        "id": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "phcId": { "type": "string", "maxLength": 64 },
         "phcName": { "type": "string", "maxLength": 128 },
+        "medicineId": { "type": "string", "maxLength": 64 },
         "medicineName": { "type": "string", "maxLength": 128 },
         "quantityRequested": { "type": "number" },
+        "quantityDispatched": { "type": "number" },
         "source": { "type": "string", "maxLength": 128 },
         "destination": { "type": "string", "maxLength": 128 },
         "status": { "type": "string", "maxLength": 64 },
         "requestDate": { "type": "string", "maxLength": 32 },
+        "estimatedDelivery": { "type": "string", "maxLength": 64 },
         "priority": { "type": "string", "maxLength": 32 },
         "notes": { "type": "string", "maxLength": 512 },
         "createdBy": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "maxLength": 64 }
       },
-      "required": ["id", "phcId", "medicineName", "quantityRequested", "status"]
+      "required": ["id", "phcId", "medicineName", "quantityRequested", "status", "createdBy"]
     },
     "ChatMessageDoc": {
       "title": "Chat Message",
       "description": "Multi-turn conversational log between user and Gemini assistant",
       "type": "object",
       "properties": {
-        "id": { "type": "string", "maxLength": 64 },
+        "id": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "userId": { "type": "string", "maxLength": 128 },
         "role": { "type": "string", "maxLength": 32 },
         "content": { "type": "string", "maxLength": 8192 },
@@ -56,9 +59,11 @@
       "description": "Historical log of speech-to-text transcriptions and parsed inventory actions",
       "type": "object",
       "properties": {
-        "id": { "type": "string", "maxLength": 64 },
+        "id": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "userId": { "type": "string", "maxLength": 128 },
         "transcript": { "type": "string", "maxLength": 4096 },
+        "language": { "type": "string", "maxLength": 32 },
+        "locale": { "type": "string", "maxLength": 32 },
         "parsedMedicine": { "type": "string", "maxLength": 128 },
         "parsedQuantity": { "type": "number" },
         "parsedTransaction": { "type": "string", "maxLength": 64 },
@@ -79,12 +84,16 @@
       "description": "Audit record of synchronized offline transaction items",
       "type": "object",
       "properties": {
-        "id": { "type": "string", "maxLength": 128 },
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "module": { "type": "string", "maxLength": 64 },
+        "action": { "type": "string", "maxLength": 64 },
+        "entityName": { "type": "string", "maxLength": 256 },
+        "facilityId": { "type": "string", "maxLength": 64 },
         "status": { "type": "string", "maxLength": 64 },
         "syncedAt": { "type": "string", "maxLength": 64 },
-        "syncedBy": { "type": "string", "maxLength": 256 }
+        "syncedBy": { "type": "string", "maxLength": 128 }
       },
-      "required": ["id", "status"]
+      "required": ["id", "status", "syncedBy"]
     }
   },
   "firestore": {

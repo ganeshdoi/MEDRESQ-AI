@@ -450,6 +450,74 @@ async function runTests() {
   }
   console.log('   [PASS] Centralized i18n verified for English, Hindi, Tamil, and Telugu.\n');
 
+  // ---------------------------------------------------------------------------
+  // PART 9: Offline Queue Medicine ID Consistency & Pre-Sync Validation
+  // ---------------------------------------------------------------------------
+  console.log('9. Testing Offline Queue Medicine ID Consistency (Q-MED-8402 Emergency Dispense & Q-ORD-8403 Normal Saline)...');
+  await fetch(`${BASE_URL}/api/demo/reset`, { method: 'POST' });
+
+  // 9a. Legacy medicineId "med-2" with "Paracetamol 500mg Tablets" resolves to med-nlem-ana-01-phc-osian
+  const legacyPcmMatch = resolveMedicineMatch(osianMeds, 'Paracetamol 500mg Tablets', 'med-2');
+  assert.equal(legacyPcmMatch.status, 'MATCHED', 'Legacy med-2 with Paracetamol 500mg Tablets must resolve');
+  assert.equal(legacyPcmMatch.medicine.id, 'med-nlem-ana-01-phc-osian');
+
+  // 9b. Missing/invalid medicineId produces a clear validation error
+  const invalidMedIdMatch = resolveMedicineMatch(osianMeds, 'NonExistentDrug 999mg', 'med-9999');
+  assert.equal(invalidMedIdMatch.status, 'UNMATCHED');
+  assert.match(invalidMedIdMatch.reason, /Validation error: Medicine ID "med-9999"/i);
+
+  // 9c. Emergency Dispense sync (120 Paracetamol 500mg Tablets at PHC Osian) succeeds and logs canonical medicineId
+  const invBeforeDispense = await (await fetch(`${BASE_URL}/api/inventory?phcId=phc-osian`)).json();
+  const pcmBefore = invBeforeDispense.find((m: any) => m.id === 'med-nlem-ana-01-phc-osian');
+  assert.ok(pcmBefore, 'Canonical Paracetamol record med-nlem-ana-01-phc-osian must exist');
+
+  const emergencyDispenseRes = await fetch(`${BASE_URL}/api/inventory/consume`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      medicineId: 'med-nlem-ana-01-phc-osian',
+      medicineName: 'Paracetamol 500mg Tablets',
+      phcId: 'phc-osian',
+      quantity: 120,
+      actionType: 'EMERGENCY_DISPENSE',
+      offlineQueueId: 'Q-MED-8402',
+      reason: 'Emergency fever triage during high-heat index',
+      prescribedBy: 'PHC Staff'
+    })
+  });
+  assert.equal(emergencyDispenseRes.status, 200, 'Emergency dispense sync must succeed with 200');
+  const emergencyDispenseData = await emergencyDispenseRes.json();
+  assert.equal(emergencyDispenseData.matchedMedicineId, 'med-nlem-ana-01-phc-osian');
+  assert.equal(emergencyDispenseData.updatedMedicine.currentStock, pcmBefore.currentStock - 120);
+  assert.equal(
+    emergencyDispenseData.updatedInventory.length,
+    invBeforeDispense.length,
+    'Must not create duplicate medicine records'
+  );
+  assert.equal(emergencyDispenseData.auditEntry.medicineId, 'med-nlem-ana-01-phc-osian');
+
+  // 9d. Normal Saline replenishment order sync (Q-ORD-8403, 50 bottles at PHC Osian) succeeds with consistent medicineId
+  const nsOrderSyncRes = await fetch(`${BASE_URL}/api/orders/create`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      medicineId: 'med-nlem-fl-02-phc-osian',
+      medicineName: 'Normal Saline (0.9% NaCl) IV Infusion 500ml',
+      quantityRequested: 50,
+      priority: 'URGENT',
+      justification: 'Stock below 3 days buffer due to dehydration admissions',
+      phcId: 'phc-osian',
+      phcName: 'PHC Osian',
+      allowDuplicateOverride: true,
+      offlineQueueId: 'Q-ORD-8403'
+    })
+  });
+  assert.equal(nsOrderSyncRes.status, 200, 'Normal Saline replenishment sync must succeed with 200');
+  const nsOrderSyncData = await nsOrderSyncRes.json();
+  assert.equal(nsOrderSyncData.order.medicineId, 'med-nlem-fl-02-phc-osian');
+  assert.equal(nsOrderSyncData.auditEntry.medicineId, 'med-nlem-fl-02-phc-osian');
+  console.log('   [PASS] Offline Queue Medicine ID consistency & pre-sync validation verified.\n');
+
   await fetch(`${BASE_URL}/api/demo/reset`, { method: 'POST' });
   console.log('ALL TESTS PASSED SUCCESSFULLY.');
 }

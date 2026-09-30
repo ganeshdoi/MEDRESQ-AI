@@ -20,7 +20,12 @@ import {
   KeyRound,
   Maximize2,
   RefreshCw,
-  CheckCircle2
+  CheckCircle2,
+  ArrowRight,
+  Pill,
+  CloudSun,
+  MapPin,
+  Compass
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext.tsx';
 import {
@@ -29,295 +34,529 @@ import {
   getCanonicalAlertMetrics
 } from '../../utils/datasetMetrics.ts';
 import { getVoiceBcp47Locale } from '../../utils/registerVoiceCommandParser.ts';
-import { SUPPORTED_LANGUAGES } from '../../i18n/index.ts';
+import { SUPPORTED_LANGUAGES, type SupportedLanguageCode } from '../../i18n/index.ts';
 
 interface QuickActionItem {
   id: string;
-  label: Record<'en' | 'hi' | 'ta' | 'te', string>;
-  prompt: Record<'en' | 'hi' | 'ta' | 'te', string>;
+  label: Record<SupportedLanguageCode, string>;
+  prompt: Record<SupportedLanguageCode, string>;
   icon: React.ComponentType<{ className?: string }>;
   badgeColor: string;
 }
 
-const QUICK_ACTIONS: QuickActionItem[] = [
+const SUGGESTED_PROMPTS: QuickActionItem[] = [
   {
-    id: 'critical_stock',
+    id: 'summarize_risks',
     label: {
-      en: 'Critical Stock',
-      hi: 'गंभीर कम स्टॉक',
-      ta: 'அவசர குறைந்த இருப்பு',
-      te: 'అత్యవసర తక్కువ నిల్వ'
+      en: "Summarize today's risks",
+      hi: 'आज के जोखिमों का सारांश दें',
+      pa: 'ਅੱਜ ਦੇ ਜੋਖਮਾਂ ਦਾ ਸਾਰ ਦਿਓ',
+      ta: 'இன்றைய அபாயங்களைச் சுருக்கவும்',
+      te: 'నేటి ప్రమాదాలను వివరించండి',
+      ml: 'ഇന്നത്തെ അപകടസാധ്യതകൾ സംഗ്രഹിക്കുക'
     },
     prompt: {
-      en: 'Which medicines are currently critically low or below safety threshold at this PHC?',
-      hi: 'इस PHC में कौन सी दवाइयां वर्तमान में गंभीर रूप से कम हैं या सुरक्षा सीमा से नीचे हैं?',
-      ta: 'இந்த PHC-யில் தற்போது எந்த மருந்துகள் மிகவும் குறைவாக அல்லது பாதுகாப்பு வரம்பிற்கு கீழே உள்ளன?',
-      te: 'ఈ PHCలో ప్రస్తుతం ఏ మందులు అత్యంత తక్కువగా లేదా భద్రతా పరిమితి కంటే తక్కువగా ఉన్నాయి?'
+      en: "Summarize today's operational risks.",
+      hi: 'इस PHC में आज के परिचालन जोखिमों का सारांश दें।',
+      pa: 'ਇਸ PHC ਵਿੱਚ ਅੱਜ ਦੇ ਸੰਚਾਲਨ ਜੋਖਮਾਂ ਦਾ ਸਾਰ ਦਿਓ।',
+      ta: 'இன்றைய செயல்பாட்டு அபாயங்களைச் சுருக்கவும்.',
+      te: 'నేటి ఆపరేషనల్ ప్రమాదాలను సంక్షిప్తంగా వివరించండి.',
+      ml: 'ഈ പിഎച്ച്സിയിലെ ഇന്നത്തെ പ്രവർത്തന അപകടസാധ്യതകൾ സംഗ്രഹിക്കുക.'
+    },
+    icon: FileText,
+    badgeColor: 'bg-orange-50 text-orange-900 border-orange-200 hover:bg-orange-100'
+  },
+  {
+    id: 'find_critical_stock',
+    label: {
+      en: 'Find critical stock',
+      hi: 'गंभीर कम स्टॉक खोजें',
+      pa: 'ਗੰਭੀਰ ਘੱਟ ਸਟਾਕ ਲੱਭੋ',
+      ta: 'அவசர குறைந்த இருப்பு',
+      te: 'అత్యవసర తక్కువ నిల్వ',
+      ml: 'ഗുരുതരമായ കുറഞ്ഞ സ്റ്റോക്ക് കണ്ടെത്തുക'
+    },
+    prompt: {
+      en: 'Which medicines are at highest risk and what should I reorder first?',
+      hi: 'आज किन दवाइयों का स्टॉक कम है और मुझे सबसे पहले क्या री-ऑर्डर करना चाहिए?',
+      pa: 'ਅੱਜ ਕਿਹੜੀਆਂ ਦਵਾਈਆਂ ਦਾ ਸਟਾਕ ਘੱਟ ਹੈ ਅਤੇ ਮੈਨੂੰ ਸਭ ਤੋਂ ਪਹਿਲਾਂ ਕੀ ਆਰਡਰ ਕਰਨਾ ਚਾਹੀਦਾ ਹੈ?',
+      ta: 'இன்று எந்த மருந்துகள் குறைவாக உள்ளன மற்றும் எதை முதலில் ஆர்டர் செய்ய வேண்டும்?',
+      te: 'ఈరోజు ఏ మందులు తక్కువగా ఉన్నాయి మరియు మొదట ఏమి ఆర్డర్ చేయాలి?',
+      ml: 'ഇന്ന് ഏതൊക്കെ മരുന്നുകളാണ് കുറവുള്ളത്, ആദ്യം ഏതാണ് റീ-ഓർഡർ ചെയ്യേണ്ടത്?'
     },
     icon: AlertTriangle,
     badgeColor: 'bg-rose-50 text-rose-800 border-rose-200 hover:bg-rose-100'
   },
   {
+    id: 'explain_forecast',
+    label: {
+      en: 'Explain the demand forecast',
+      hi: 'मांग पूर्वानुमान समझाएं',
+      pa: 'ਮੰਗ ਪੂਰਵ-ਅਨੁਮਾਨ ਸਮਝਾਓ',
+      ta: 'தேவை கணிப்பை விளக்கவும்',
+      te: 'డిమాండ్ అంచనాను వివరించండి',
+      ml: 'ഡിമാൻഡ് പ്രവചനം വിശദീകരിക്കുക'
+    },
+    prompt: {
+      en: 'Explain this forecast in simple language and what the Medical Officer should do.',
+      hi: 'वर्तमान मौसमी मांग पूर्वानुमान को सरल भाषा में समझाएं और चिकित्सा अधिकारी को क्या करना चाहिए।',
+      pa: 'ਮੌਜੂਦਾ ਮੰਗ ਪੂਰਵ-ਅਨੁਮਾਨ ਨੂੰ ਸਰਲ ਭਾਸ਼ਾ ਵਿੱਚ ਸਮਝਾਓ ਅਤੇ ਮੈਡੀਕਲ ਅਫਸਰ ਨੂੰ ਕੀ ਕਰਨਾ ਚਾਹੀਦਾ ਹੈ।',
+      ta: 'தற்போதைய தேவை கணிப்பை எளிய மொழியில் விளக்கவும்.',
+      te: 'ప్రస్తుత డిమాండ్ అంచనాను సరళమైన భాషలో వివరించండి.',
+      ml: 'നിലവിലെ ഡിമാൻഡ് പ്രവചനം ലളിതമായ ഭാഷയിൽ വിശദീകരിക്കുക.'
+    },
+    icon: CloudSun,
+    badgeColor: 'bg-sky-50 text-sky-900 border-sky-200 hover:bg-sky-100'
+  },
+  {
+    id: 'recommend_priority_actions',
+    label: {
+      en: 'Recommend priority actions',
+      hi: 'प्राथमिकता कार्य सुझाएं',
+      pa: 'ਤਰਜੀਹੀ ਕਾਰਵਾਈਆਂ ਸੁਝਾਓ',
+      ta: 'முன்னுரிமை நடவடிக்கைகள்',
+      te: 'ప్రాధాన్యత చర్యలను సూచించండి',
+      ml: 'മുൻഗണനാ നടപടികൾ നിർദ്ദേശിക്കുക'
+    },
+    prompt: {
+      en: 'What should I prioritize today and what actions should the Medical Officer take?',
+      hi: 'आज मुझे किस चीज़ को प्राथमिकता देनी चाहिए और चिकित्सा अधिकारी को क्या कदम उठाने चाहिए?',
+      pa: 'ਅੱਜ ਮੈਨੂੰ ਕਿਸ ਚੀਜ਼ ਨੂੰ ਤਰਜੀਹ ਦੇਣੀ ਚਾਹੀਦੀ ਹੈ ਅਤੇ ਮੈਡੀਕਲ ਅਫਸਰ ਨੂੰ ਕੀ ਕਦਮ ਚੁੱਕਣੇ ਚਾਹੀਦੇ ਹਨ?',
+      ta: 'இன்று நான் எதற்கு முன்னுரிமை அளிக்க வேண்டும் மற்றும் மருத்துவ அதிகாரி என்ன நடவடிக்கை எடுக்க வேண்டும்?',
+      te: 'ఈరోజు నేను దేనికి ప్రాధాన్యత ఇవ్వాలి మరియు వైద్యాధికారి ఏ చర్యలు తీసుకోవాలి?',
+      ml: 'ഇന്ന് ഞാൻ എന്തിനാണ് മുൻഗണന നൽകേണ്ടത്, മെഡിക്കൽ ഓഫീസർ എന്ത് നടപടികൾ സ്വീകരിക്കണം?'
+    },
+    icon: ShieldCheck,
+    badgeColor: 'bg-emerald-50 text-emerald-900 border-emerald-200 hover:bg-emerald-100'
+  },
+  {
     id: 'expiring_soon',
     label: {
-      en: 'Expiring Soon',
-      hi: 'शीघ्र एक्सपायरी',
-      ta: 'விரைவில் காலாவதி',
-      te: 'త్వరలో గడువు ముగిసేవి'
+      en: 'FEFO Expiring Soon',
+      hi: 'शीघ्र एक्सपायरी (FEFO)',
+      pa: 'ਜਲਦ ਐਕਸਪਾਇਰੀ (FEFO)',
+      ta: 'விரைவில் காலாவதி (FEFO)',
+      te: 'త్వరలో గడువు ముగిసేవి (FEFO)',
+      ml: 'ഉടൻ കാലാവധി കഴിയുന്നവ (FEFO)'
     },
     prompt: {
       en: 'Show me medicines approaching expiry and FEFO priority batches within 90 days.',
       hi: '90 दिनों के भीतर एक्सपायर होने वाली दवाइयां और FEFO प्राथमिकता वाले बैच दिखाएं।',
+      pa: '90 ਦਿਨਾਂ ਦੇ ਅੰਦਰ ਐਕਸਪਾਇਰ ਹੋਣ ਵਾਲੀਆਂ ਦਵਾਈਆਂ ਅਤੇ FEFO ਤਰਜੀਹੀ ਬੈਚ ਦਿਖਾਓ।',
       ta: '90 நாட்களுக்குள் காலாவதியாகும் மருந்துகள் மற்றும் FEFO முன்னுரிமை பேட்ச்களைக் காட்டு.',
-      te: '90 రోజుల్లో గడువు ముగిసే మందులు మరియు FEFO ప్రాధాన్యత బ్యాచ్‌లను చూపించు.'
+      te: '90 రోజుల్లో గడువు ముగిసే మందులు మరియు FEFO ప్రాధాన్యత బ్యాచ్‌లను చూపించు.',
+      ml: '90 ദിവസത്തിനുള്ളിൽ കാലാവധി കഴിയുന്ന മരുന്നുകളും FEFO മുൻഗണനാ ബാച്ചുകളും കാണിക്കുക.'
     },
     icon: Clock,
     badgeColor: 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100'
   },
   {
-    id: 'pending_transfers',
-    label: {
-      en: 'Pending Transfers',
-      hi: 'लंबित ट्रांसफर',
-      ta: 'நிலுவை இடமாற்றங்கள்',
-      te: 'పెండింగ్ బదిలీలు'
-    },
-    prompt: {
-      en: 'What inter-PHC transfers and warehouse orders are currently pending approval or in transit?',
-      hi: 'कौन से अंतर-PHC ट्रांसफर और वेयरहाउस ऑर्डर वर्तमान में स्वीकृति के लिए लंबित या ट्रांजिट में हैं?',
-      ta: 'எந்த PHC இடமாற்றங்கள் மற்றும் கிடங்கு ஆர்டர்கள் தற்போது ஒப்புதலுக்காக நிலுவையில் உள்ளன?',
-      te: 'ఏ PHC బదిలీలు మరియు గిడ్డంగి ఆర్డర్లు ప్రస్తుతం ఆమోదం కోసం పెండింగ్‌లో ఉన్నాయి?'
-    },
-    icon: Truck,
-    badgeColor: 'bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100'
-  },
-  {
     id: 'redistribution_help',
     label: {
-      en: 'Redistribution Help',
-      hi: 'पुनर्वितरण सहायता',
+      en: 'Peer Transfers & Map',
+      hi: 'पुनर्वितरण और ट्रांसफर',
+      pa: 'ਪੀਅਰ ਟ੍ਰਾਂਸਫਰ ਅਤੇ ਮੈਪ',
       ta: 'மறுபகிர்வு உதவி',
-      te: 'పునఃపంపిణీ సహాయం'
+      te: 'పునఃపంపిణీ సహాయం',
+      ml: 'പിയർ ট্রান্সഫറുകളും മാപ്പും'
     },
     prompt: {
-      en: 'Which PHCs need urgent redistribution and which peer PHCs have excess stock to share?',
+      en: 'Where can stock be transferred from to reduce risk and which orders are pending?',
       hi: 'किन PHCs को तत्काल पुनर्वितरण की आवश्यकता है और किन साथी PHCs के पास साझा करने के लिए अतिरिक्त स्टॉक है?',
+      pa: 'ਜੋਖਮ ਘਟਾਉਣ ਲਈ ਸਟਾਕ ਕਿੱਥੋਂ ਟ੍ਰਾਂਸਫਰ ਕੀਤਾ ਜਾ ਸਕਦਾ ਹੈ ਅਤੇ ਕਿਹੜੇ ਆਰਡਰ ਬਕਾਇਆ ਹਨ?',
       ta: 'எந்த PHC-களுக்கு அவசர மறுபகிர்வு தேவை மற்றும் எந்த PHC-களிடம் கூடுதல் இருப்பு உள்ளது?',
-      te: 'ఏ PHCలకు అత్యవసర పునఃపంపిణీ అవసరం మరియు ఏ PHCలలో అదనపు నిల్వ ఉంది?'
+      te: 'ఏ PHCలకు అత్యవసర పునఃపంపిణీ అవసరం మరియు ఏ PHCలలో అదనపు నిల్వ ఉంది?',
+      ml: 'അപകടസാധ്യത കുറയ്ക്കാൻ എവിടെ നിന്ന് സ്റ്റോക്ക് മാറ്റാം, ഏതൊക്കെ ഓർഡറുകൾ ബാക്കിയുണ്ട്?'
     },
     icon: ArrowLeftRight,
     badgeColor: 'bg-teal-50 text-teal-900 border-teal-200 hover:bg-teal-100'
-  },
-  {
-    id: 'daily_summary',
-    label: {
-      en: 'Daily Summary',
-      hi: 'दैनिक सारांश',
-      ta: 'தினசரி சுருக்கம்',
-      te: 'రోజువారీ సారాంశం'
-    },
-    prompt: {
-      en: "Summarize today's supply situation, service readiness score, critical alerts, and top recommended actions.",
-      hi: 'आज की आपूर्ति स्थिति, सेवा तत्परता स्कोर, गंभीर अलर्ट और शीर्ष अनुशंसित कार्यों का सारांश दें।',
-      ta: 'இன்றைய மருந்து விநியோக நிலை, தயார்நிலை மதிப்பெண், முக்கிய எச்சரிக்கைகள் மற்றும் பரிந்துரைகளைச் சுருக்கவும்.',
-      te: 'నేటి మందుల సరఫరా పరిస్థితి, సంసిద్ధత స్కోరు, ముఖ్య హెచ్చరికలు మరియు సూచనలను వివరించండి.'
-    },
-    icon: FileText,
-    badgeColor: 'bg-emerald-50 text-emerald-900 border-emerald-200 hover:bg-emerald-100'
-  },
-  {
-    id: 'explain_alerts',
-    label: {
-      en: 'Explain Alerts',
-      hi: 'अलर्ट समझाएं',
-      ta: 'எச்சரிக்கை விளக்கம்',
-      te: 'హెచ్చరికల వివరణ'
-    },
-    prompt: {
-      en: 'Why were the current active alerts generated and what immediate supply-chain action should be taken?',
-      hi: 'वर्तमान सक्रिय अलर्ट क्यों जनरेट किए गए और तत्काल क्या आपूर्ति-श्रृंखला कार्रवाई की जानी चाहिए?',
-      ta: 'தற்போதைய எச்சரிக்கைகள் ஏன் உருவாக்கப்பட்டன மற்றும் உடனடியாக என்ன நடவடிக்கை எடுக்க வேண்டும்?',
-      te: 'ప్రస్తుత హెచ్చరికలు ఎందుకు వచ్చాయి మరియు వెంటనే ఏ చర్య తీసుకోవాలి?'
-    },
-    icon: Bell,
-    badgeColor: 'bg-purple-50 text-purple-900 border-purple-200 hover:bg-purple-100'
   }
 ];
 
-const MODULE_LABELS: Record<string, Record<'en' | 'hi' | 'ta' | 'te', string>> = {
+const MODULE_LABELS: Record<string, Record<SupportedLanguageCode, string>> = {
+  home: {
+    en: 'Command Center Dashboard',
+    hi: 'कमांड सेंटर डैशबोर्ड',
+    pa: 'ਕਮਾਂਡ ਸੈਂਟਰ ਡੈਸ਼ਬੋਰਡ',
+    ta: 'கட்டுப்பாட்டு மைய டாஷ்போர்டு',
+    te: 'కమాండ్ సెంటర్ డాష్‌బోర్డ్',
+    ml: 'കമാൻഡ് സെന്റർ ഡാഷ്‌ബോർഡ്'
+  },
   dashboard: {
     en: 'Command Center Dashboard',
     hi: 'कमांड सेंटर डैशबोर्ड',
+    pa: 'ਕਮਾਂਡ ਸੈਂਟਰ ਡੈਸ਼ਬੋਰਡ',
     ta: 'கட்டுப்பாட்டு மைய டாஷ்போர்டு',
-    te: 'కమాండ్ సెంటర్ డాష్‌బోర్డ్'
+    te: 'కమాండ్ సెంటర్ డాష్‌బోర్డ్',
+    ml: 'കമാൻഡ് സെന്റർ ഡാഷ്‌ബോർഡ്'
   },
   medicine: {
     en: 'Medicine Inventory & FEFO',
     hi: 'दवा इन्वेंटरी और FEFO',
+    pa: 'ਦਵਾਈ ਇਨਵੈਂਟਰੀ ਅਤੇ FEFO',
     ta: 'மருந்து இருப்பு & FEFO',
-    te: 'మందుల నిల్వ & FEFO'
+    te: 'మందుల నిల్వ & FEFO',
+    ml: 'മരുന്ന് സ്റ്റോക്കും FEFO-യും'
   },
   orders: {
-    en: 'Orders & Peer Redistribution',
+    en: 'Orders & PHC Transfers',
     hi: 'ऑर्डर और पुनर्वितरण',
+    pa: 'ਆਰਡਰ ਅਤੇ PHC ਟ੍ਰਾਂਸਫਰ',
     ta: 'ஆர்டர்கள் & மறுபகிர்வு',
-    te: 'ఆర్డర్లు & పునఃపంపిణీ'
+    te: 'ఆర్డర్లు & పునఃపంపిణీ',
+    ml: 'ഓർഡറുകളും പിഎച്ച്സി മാറ്റങ്ങളും'
   },
   records: {
     en: 'Physical Register (OCR & Voice)',
     hi: 'भौतिक रजिस्टर (OCR और वॉइस)',
+    pa: 'ਭੌਤਿਕ ਰਜਿਸਟਰ (OCR ਅਤੇ ਵੌਇਸ)',
     ta: 'இருப்புப் பதிவேடு (OCR & குரல்)',
-    te: 'భౌతిక రిజిస్టర్ (OCR & వాయిస్)'
+    te: 'భౌతిక రిజిస్టర్ (OCR & వాయిస్)',
+    ml: 'ഫിസിക്കൽ രജിസ്റ്റർ (OCR & വോയ്‌സ്)'
   },
   alerts: {
     en: 'Alerts & Thresholds',
     hi: 'अलर्ट और सीमाएं',
+    pa: 'ਅਲਰਟ ਅਤੇ ਸੀਮਾਵਾਂ',
     ta: 'எச்சரிக்கைகள் & வரம்புகள்',
-    te: 'హెచ్చరికలు & పరిమితులు'
+    te: 'హెచ్చరికలు & పరిమితులు',
+    ml: 'അലേർട്ടുകളും പരിധികളും'
+  },
+  'offline-queue': {
+    en: 'Offline Sync Queue',
+    hi: 'ऑफ़लाइन सिंक कतार',
+    pa: 'ਔਫਲਾਈਨ ਸਿੰਕ ਕਤਾਰ',
+    ta: 'ஆஃப்லைன் வரிசை',
+    te: 'ఆఫ్‌లైన్ క్యూ',
+    ml: 'ഓഫ്‌ലൈൻ സിങ്ക് ക്യൂ'
   },
   preparedness: {
-    en: 'Outbreak & Demand Forecast',
+    en: 'Demand & Surge Forecast',
     hi: 'प्रकोप और मांग पूर्वानुमान',
+    pa: 'ਮੰਗ ਅਤੇ ਸਰਜ ਪੂਰਵ-ਅਨੁਮਾਨ',
     ta: 'நோய் பரவல் & தேவை கணிப்பு',
-    te: 'వ్యాప్తి & డిమాండ్ అంచనా'
+    te: 'వ్యాప్తి & డిమాండ్ అంచనా',
+    ml: 'ഡിമാൻഡ് & സർജ് പ്രവചനം'
+  },
+  attendance: {
+    en: 'Staff & Biometric Attendance',
+    hi: 'स्टाफ और उपस्थिति',
+    pa: 'ਸਟਾਫ ਅਤੇ ਹਾਜ਼ਰੀ',
+    ta: 'பணியாளர்கள் & வருகை',
+    te: 'సిబ్బంది & హాజరు',
+    ml: 'ജീവനക്കാരും ഹാജരും'
   },
   workforce: {
     en: 'Staff & Biometric Attendance',
     hi: 'स्टाफ और उपस्थिति',
+    pa: 'ਸਟਾਫ ਅਤੇ ਹਾਜ਼ਰੀ',
     ta: 'பணியாளர்கள் & வருகை',
-    te: 'సిబ్బంది & హాజరు'
+    te: 'సిబ్బంది & హాజరు',
+    ml: 'ജീവനക്കാരും ഹാജരും'
   },
   map: {
     en: 'Network Stock Map',
     hi: 'नेटवर्क स्टॉक मैप',
+    pa: 'ਨੈੱਟਵਰਕ ਸਟਾਕ ਮੈਪ',
     ta: 'நெட்வொர்க் இருப்பு வரைபடம்',
-    te: 'నెట్‌వర్క్ నిల్వ మ్యాప్'
+    te: 'నెట్‌వర్క్ నిల్వ మ్యాప్',
+    ml: 'നെറ്റ്‌വർക്ക് സ്റ്റോക്ക് മാപ്പ്'
+  },
+  directory: {
+    en: 'PHC & NLEM Catalogue',
+    hi: 'PHC और NLEM निर्देशिका',
+    pa: 'PHC ਅਤੇ NLEM ਕੈਟਾਲਾਗ',
+    ta: 'PHC & NLEM பட்டியல்',
+    te: 'PHC & NLEM జాబితా',
+    ml: 'പിഎച്ച്സി & NLEM കാറ്റലോഗ്'
   },
   analytics: {
-    en: 'Analytics & Audit Reports',
+    en: 'Reports & Export',
     hi: 'विश्लेषण और ऑडिट रिपोर्ट',
+    pa: 'ਰਿਪੋਰਟਾਂ ਅਤੇ ਐਕਸਪੋਰਟ',
     ta: 'பகுப்பாய்வு & தணிக்கை அறிக்கைகள்',
-    te: 'విశ్లేషణ & ఆడిట్ నివేదికలు'
+    te: 'విశ్లేషణ & ఆడిట్ నివేదికలు',
+    ml: 'റിപ്പോർട്ടുകളും എക്സ്പോർട്ടും'
   },
   chatbot: {
     en: 'Gemini AI Workspace',
     hi: 'Gemini AI कार्यक्षेत्र',
+    pa: 'Gemini AI ਵਰਕਸਪੇਸ',
     ta: 'Gemini AI பணியிடம்',
-    te: 'Gemini AI వర్క్‌స్పేస్'
+    te: 'Gemini AI వర్క్‌స్పేస్',
+    ml: 'Gemini AI വർക്ക്‌സ്‌പേസ്'
   }
 };
 
-const MODULE_CONTEXT_PROMPTS: Record<string, Record<'en' | 'hi' | 'ta' | 'te', string>> = {
+const MODULE_CONTEXT_PROMPTS: Record<string, Record<SupportedLanguageCode, string>> = {
+  home: {
+    en: 'Explain the current PHC situation and what I should prioritize today.',
+    hi: 'इस PHC की वर्तमान स्थिति समझाएं और आज मुझे किस चीज़ को प्राथमिकता देनी चाहिए।',
+    pa: 'ਇਸ PHC ਦੀ ਮੌਜੂਦਾ ਸਥਿਤੀ ਸਮਝਾਓ ਅਤੇ ਅੱਜ ਮੈਨੂੰ ਕਿਸ ਚੀਜ਼ ਨੂੰ ਤਰਜੀਹ ਦੇਣੀ ਚਾਹੀਦੀ ਹੈ।',
+    ta: 'இந்த PHC-யின் தற்போதைய நிலையை விளக்கவும்.',
+    te: 'ఈ PHC ప్రస్తుత పరిస్థితిని వివరించండి.',
+    ml: 'ഈ പിഎച്ച്സിയുടെ നിലവിലെ അവസ്ഥ വിശദീകരിക്കുക, ഇന്ന് എന്തിനാണ് മുൻഗണന നൽകേണ്ടത്?'
+  },
   dashboard: {
-    en: 'Give me a short supply situation report for this PHC.',
-    hi: 'इस PHC के लिए एक संक्षिप्त आपूर्ति स्थिति रिपोर्ट दें।',
-    ta: 'இந்த PHC-க்கான சுருக்கமான விநியோக நிலை அறிக்கையைத் தரவும்.',
-    te: 'ఈ PHC కోసం సంక్షిप्त సరఫరా పరిస్థితి నివేదికను ఇవ్వండి.'
+    en: 'Explain the current PHC situation and what I should prioritize today.',
+    hi: 'इस PHC की वर्तमान स्थिति समझाएं और आज मुझे किस चीज़ को प्राथमिकता देनी चाहिए।',
+    pa: 'ਇਸ PHC ਦੀ ਮੌਜੂਦਾ ਸਥਿਤੀ ਸਮਝਾਓ ਅਤੇ ਅੱਜ ਮੈਨੂੰ ਕਿਸ ਚੀਜ਼ ਨੂੰ ਤਰਜੀਹ ਦੇਣੀ ਚਾਹੀਦੀ ਹੈ।',
+    ta: 'இந்த PHC-யின் தற்போதைய நிலையை விளக்கவும்.',
+    te: 'ఈ PHC ప్రస్తుత పరిస్థితిని వివరించండి.',
+    ml: 'ഈ പിഎച്ച്സിയുടെ നിലവിലെ അവസ്ഥ വിശദീകരിക്കുക, ഇന്ന് എന്തിനാണ് മുൻഗണന നൽകേണ്ടത്?'
   },
   medicine: {
-    en: 'Explain the ROP, safety stock, and days of supply for critically low items.',
-    hi: 'गंभीर रूप से कम वस्तुओं के लिए ROP, सुरक्षा स्टॉक और आपूर्ति के दिनों को समझाएं।',
-    ta: 'குறைந்த இருப்பு மருந்துகளுக்கான ROP, பாதுகாப்பு இருப்பு மற்றும் விநியோக நாட்களை விளக்கவும்.',
-    te: 'తక్కువగా ఉన్న మందుల ROP, భద్రతా నిల్వ మరియు సరఫరా రోజులను వివరించండి.'
+    en: 'Explain the critical inventory risks visible on this page.',
+    hi: 'इस पृष्ठ पर दिखने वाले गंभीर इन्वेंटरी जोखिमों को समझाएं।',
+    pa: 'ਇਸ ਪੰਨੇ ਤੇ ਦਿਖਾਈ ਦੇਣ ਵਾਲੇ ਗੰਭੀਰ ਇਨਵੈਂਟਰੀ ਜੋਖਮਾਂ ਨੂੰ ਸਮਝਾਓ।',
+    ta: 'இந்தப் பக்கத்தில் உள்ள முக்கிய மருந்து இருப்பு அபாயங்களை விளக்கவும்.',
+    te: 'ఈ పేజీలో కనిపించే ముఖ్యమైన నిల్వ ప్రమాదాలను వివరించండి.',
+    ml: 'ഈ പേജിൽ കാണുന്ന പ്രധാന മരുന്ന് സ്റ്റോക്ക് അപകടസാധ്യതകൾ വിശദീകരിക്കുക.'
+  },
+  preparedness: {
+    en: 'Explain this forecast and what the Medical Officer should do.',
+    hi: 'इस पूर्वानुमान को समझाएं और चिकित्सा अधिकारी को क्या करना चाहिए।',
+    pa: 'ਇਸ ਪੂਰਵ-ਅਨੁਮਾਨ ਨੂੰ ਸਮਝਾਓ ਅਤੇ ਮੈਡੀਕਲ ਅਫਸਰ ਨੂੰ ਕੀ ਕਰਨਾ ਚਾਹੀਦਾ ਹੈ।',
+    ta: 'இந்த தேவை கணிப்பை விளக்கி மருத்துவ அதிகாரி என்ன செய்ய வேண்டும் எனக் கூறவும்.',
+    te: 'ఈ అంచనాను వివరించండి మరియు వైద్యాధికారి ఏమి చేయాలో చెప్పండి.',
+    ml: 'ഈ പ്രവചനം വിശദീകരിക്കുക, മെഡിക്കൽ ഓഫീസർ എന്ത് ചെയ്യണം?'
   },
   orders: {
-    en: 'Which pending transfers or orders should be prioritized first?',
-    hi: 'किन लंबित ट्रांसफर या ऑर्डर को पहले प्राथमिकता दी जानी चाहिए?',
-    ta: 'எந்த நிலுவையிலுள்ள இடமாற்றங்கள் அல்லது ஆர்டர்களுக்கு முன்னுரிமை அளிக்க வேண்டும்?',
-    te: 'ఏ పెండింగ్ బదిలీలు లేదా ఆర్డర్లకు మొదట ప్రాధాన్యత ఇవ్వాలి?'
+    en: 'Which replenishment actions should be prioritized?',
+    hi: 'किन पुनःपूर्ति कार्यों को प्राथमिकता दी जानी चाहिए?',
+    pa: 'ਕਿਹੜੇ ਰੀਸਟਾਕ ਕੰਮਾਂ ਨੂੰ ਪਹਿਲ ਦਿੱਤੀ ਜਾਣੀ ਚਾਹੀਦੀ ਹੈ?',
+    ta: 'எந்த மருந்து ஆர்டர்களுக்கு முதலில் முன்னுரிமை அளிக்க வேண்டும்?',
+    te: 'ఏ రీస్టాక్ చర్యలకు మొదట ప్రాధాన్యత ఇవ్వాలి?',
+    ml: 'ഏതൊക്കെ റീസ്റ്റോക്ക് നടപടികൾക്കാണ് മുൻഗണന നൽകേണ്ടത്?'
+  },
+  map: {
+    en: 'Where can stock be transferred from to reduce risk?',
+    hi: 'जोखिम कम करने के लिए स्टॉक कहां से स्थानांतरित किया जा सकता है?',
+    pa: 'ਜੋਖਮ ਘਟਾਉਣ ਲਈ ਸਟਾਕ ਕਿੱਥੋਂ ਟ੍ਰਾਂਸਫਰ ਕੀਤਾ ਜਾ ਸਕਦਾ ਹੈ?',
+    ta: 'அபாயத்தைக் குறைக்க எந்த PHC-யிலிருந்து மருந்துகளை இடமாற்றம் செய்யலாம்?',
+    te: 'ప్రమాదాన్ని తగ్గించడానికి ఏ PHC నుండి నిల్వను బదిలీ చేయవచ్చు?',
+    ml: 'അപകടസാധ്യത കുറയ്ക്കാൻ എവിടെ നിന്ന് സ്റ്റോക്ക് മാറ്റാൻ കഴിയും?'
   },
   records: {
     en: 'How do I verify an OCR or voice register entry and what audit checks apply?',
     hi: 'मैं OCR या वॉइस रजिस्टर प्रविष्टि को कैसे सत्यापित करूं और कौन सी ऑडिट जांच लागू होती है?',
+    pa: 'ਮੈਂ OCR ਜਾਂ ਵੌਇਸ ਰਜਿਸਟਰ ਐਂਟਰੀ ਦੀ ਪੁਸ਼ਟੀ ਕਿਵੇਂ ਕਰਾਂ ਅਤੇ ਕਿਹੜੀਆਂ ਆਡਿਟ ਜਾਂਚਾਂ ਲਾਗੂ ਹੁੰਦੀਆਂ ਹਨ?',
     ta: 'OCR அல்லது குரல் பதிவேடு பதிவை எவ்வாறு சரிபார்ப்பது?',
-    te: 'OCR లేదా వాయిస్ రిజిస్టర్ ఎంట్రీని ఎలా ధృవీకరించాలి?'
+    te: 'OCR లేదా వాయిస్ రిజిస్టర్ ఎంట్రీని ఎలా ధృవీకరించాలి?',
+    ml: 'OCR അല്ലെങ്കിൽ വോയ്‌സ് രജിസ്റ്റർ എൻട്രി എങ്ങനെ പരിശോധിച്ചുറപ്പിക്കാം?'
   },
   alerts: {
-    en: 'Explain why each active critical alert was triggered.',
+    en: 'Why is this medicine showing a warning and how should we resolve active alerts?',
     hi: 'समझाएं कि प्रत्येक सक्रिय गंभीर अलर्ट क्यों ट्रिगर हुआ।',
+    pa: 'ਸਮਝਾਓ ਕਿ ਇਹ ਦਵਾਈ ਚੇਤਾਵਨੀ ਕਿਉਂ ਦਿਖਾ ਰਹੀ ਹੈ ਅਤੇ ਅਲਰਟ ਕਿਵੇਂ ਹੱਲ ਕਰੀਏ?',
     ta: 'ஒவ்வொரு முக்கிய எச்சரிக்கையும் ஏன் உருவாக்கப்பட்டது என்பதை விளக்கவும்.',
-    te: 'ప్రతి ముఖ్యమైన హెచ్చరిక ఎందుకు వచ్చిందో వివరించండి.'
+    te: 'ప్రతి ముఖ్యమైన హెచ్చరిక ఎందుకు వచ్చిందో వివరించండి.',
+    ml: 'എന്തുകൊണ്ടാണ് ഈ മരുന്ന് മുന്നറിയിപ്പ് കാണിക്കുന്നത്, സജീവ അലേർട്ടുകൾ എങ്ങനെ പരിഹരിക്കാം?'
   },
-  preparedness: {
-    en: 'Explain the current seasonal surge forecast and high-risk medicines.',
-    hi: 'वर्तमान मौसमी उछाल पूर्वानुमान और उच्च जोखिम वाली दवाओं को समझाएं।',
-    ta: 'தற்போதைய பருவகால தேவை கணிப்பு மற்றும் அதிக ஆபத்துள்ள மருந்துகளை விளக்கவும்.',
-    te: 'ప్రస్తుత సీజనల్ డిమాండ్ అంచనా మరియు అధిక రిస్క్ మందులను వివరించండి.'
+  'offline-queue': {
+    en: 'Explain the offline sync status and any pending or failed records.',
+    hi: 'ऑफ़लाइन सिंक स्थिति और लंबित रिकॉर्ड समझाएं।',
+    pa: 'ਔਫਲਾਈਨ ਸਿੰਕ ਸਥਿਤੀ ਅਤੇ ਬਕਾਇਆ ਜਾਂ ਅਸਫਲ ਰਿਕਾਰਡ ਸਮਝਾਓ।',
+    ta: 'ஆஃப்லைன் ஒத்திசைவு நிலையை விளக்கவும்.',
+    te: 'ఆఫ్‌లైన్ సింక్ స్థితిని వివరించండి.',
+    ml: 'ഓഫ്‌ലൈൻ സിങ്ക് നിലയും ബാക്കിയുള്ള റെക്കോർഡുകളും വിശദീകരിക്കുക.'
+  },
+  attendance: {
+    en: 'Summarize today’s staff attendance and operational readiness.',
+    hi: 'आज की स्टाफ उपस्थिति और परिचालन तत्परता का सारांश दें।',
+    pa: 'ਅੱਜ ਦੀ ਸਟਾਫ ਹਾਜ਼ਰੀ ਅਤੇ ਸੰਚਾਲਨ ਤਿਆਰੀ ਦਾ ਸਾਰ ਦਿਓ।',
+    ta: 'இன்றைய பணியாளர் வருகை மற்றும் தயார்நிலையைச் சுருக்கவும்.',
+    te: 'నేటి సిబ్బంది హాజరు మరియు సంసిద్ధతను వివరించండి.',
+    ml: 'ഇന്നത്തെ ജീവനക്കാരുടെ ഹാജരും പ്രവർത്തന സജ്ജതയും സംഗ്രഹിക്കുക.'
   },
   workforce: {
     en: 'Summarize today’s staff attendance and operational readiness.',
     hi: 'आज की स्टाफ उपस्थिति और परिचालन तत्परता का सारांश दें।',
+    pa: 'ਅੱਜ ਦੀ ਸਟਾਫ ਹਾਜ਼ਰੀ ਅਤੇ ਸੰਚਾਲਨ ਤਿਆਰੀ ਦਾ ਸਾਰ ਦਿਓ।',
     ta: 'இன்றைய பணியாளர் வருகை மற்றும் தயார்நிலையைச் சுருக்கவும்.',
-    te: 'నేటి సిబ్బంది హాజరు మరియు సంసిద్ధతను వివరించండి.'
+    te: 'నేటి సిబ్బంది హాజరు మరియు సంసిద్ధతను వివరించండి.',
+    ml: 'ഇന്നത്തെ ജീവനക്കാരുടെ ഹാജരും പ്രവർത്തന സജ്ജതയും സംഗ്രഹിക്കുക.'
   }
 };
 
-const UI_TEXT = {
+const UI_TEXT: Record<
+  SupportedLanguageCode,
+  {
+    assistantTitle: string;
+    assistantSubtitle: string;
+    activeFacility: string;
+    pageContext: string;
+    quickActionsTitle: string;
+    inputPlaceholder: string;
+    send: string;
+    clearChat: string;
+    openFullView: string;
+    thinking: string;
+    readOnlyBadge: string;
+    authorizedBadge: string;
+    unlockAccess: string;
+    safetyNotice: string;
+  }
+> = {
   en: {
-    assistantTitle: 'Gemini AI Operational Assistant',
-    assistantSubtitle: 'Grounded in live MEDRESQ supply-chain data',
+    assistantTitle: 'Ask Gemini · AI Command Center',
+    assistantSubtitle: 'Grounded in live MEDRESQ PHC context, forecast & inventory signals',
     activeFacility: 'Facility',
-    pageContext: 'Page Context',
-    quickActionsTitle: 'Quick Operational Checks',
-    inputPlaceholder: 'Ask about critical stock, FEFO expiry, transfers, alerts, or forecasts...',
-    send: 'Send',
+    pageContext: 'Context',
+    quickActionsTitle: 'Suggested Prompts & Operational Checks',
+    inputPlaceholder: 'Ask: "What should I prioritize today?" or "Which medicines are at highest risk?"...',
+    send: 'Ask Gemini',
     clearChat: 'Clear chat',
-    openFullView: 'Full Workspace',
-    thinking: 'Gemini is analyzing verified MEDRESQ operational tools...',
+    openFullView: 'Full AI Workspace',
+    thinking: 'Gemini is analyzing PHC context…',
     readOnlyBadge: 'Demo / Read-Only Mode',
     authorizedBadge: 'Authorized Officer',
     unlockAccess: 'Unlock Officer Access',
-    safetyNotice: 'Advisory Only · Never fabricates inventory · No autonomous prescribing'
+    safetyNotice: 'Advisory Only · Grounded in live PHC telemetry · No autonomous prescribing'
   },
   hi: {
-    assistantTitle: 'Gemini AI परिचालन सहायक',
+    assistantTitle: 'Ask Gemini · AI कमांड सेंटर',
     assistantSubtitle: 'लाइव MEDRESQ आपूर्ति-श्रृंखला डेटा पर आधारित',
     activeFacility: 'केंद्र (PHC)',
     pageContext: 'पृष्ठ संदर्भ',
-    quickActionsTitle: 'त्वरित परिचालन जांच',
-    inputPlaceholder: 'कम स्टॉक, एक्सपायरी, ट्रांसफर, अलर्ट या पूर्वानुमान के बारे में पूछें...',
-    send: 'भेजें',
+    quickActionsTitle: 'सुझाए गए प्रश्न और त्वरित जांच',
+    inputPlaceholder: 'पूछें: "आज किन दवाइयों का स्टॉक कम है?" या "आज मुझे क्या प्राथमिकता देनी चाहिए?"...',
+    send: 'Ask Gemini',
     clearChat: 'चैट साफ़ करें',
     openFullView: 'पूर्ण कार्यक्षेत्र',
-    thinking: 'Gemini सत्यापित MEDRESQ डेटा का विश्लेषण कर रहा है...',
+    thinking: 'Gemini PHC संदर्भ का विश्लेषण कर रहा है…',
     readOnlyBadge: 'डेमो / केवल-पढ़ने का मोड',
     authorizedBadge: 'अधिकृत अधिकारी',
     unlockAccess: 'अधिकारी एक्सेस अनलॉक करें',
     safetyNotice: 'केवल सलाहकार · कोई काल्पनिक डेटा नहीं · स्वायत्त दवा प्रेस्क्रिप्शन नहीं'
   },
+  pa: {
+    assistantTitle: 'Ask Gemini · AI ਕਮਾਂਡ ਸੈਂਟਰ',
+    assistantSubtitle: 'ਲਾਈਵ MEDRESQ PHC ਸਪਲਾਈ-ਚੇਨ ਡੇਟਾ ਤੇ ਆਧਾਰਿਤ',
+    activeFacility: 'ਕੇਂਦਰ (PHC)',
+    pageContext: 'ਪੰਨਾ ਸੰਦਰਭ',
+    quickActionsTitle: 'ਸੁਝਾਏ ਗਏ ਸਵਾਲ ਅਤੇ ਸੰਚਾਲਨ ਜਾਂਚਾਂ',
+    inputPlaceholder: 'ਪੁੱਛੋ: "ਅੱਜ ਕਿਹੜੀਆਂ ਦਵਾਈਆਂ ਦਾ ਸਟਾਕ ਘੱਟ ਹੈ?" ਜਾਂ "ਮੈਨੂੰ ਕੀ ਤਰਜੀਹ ਦੇਣੀ ਚਾਹੀਦੀ ਹੈ?"...',
+    send: 'Ask Gemini',
+    clearChat: 'ਚੈਟ ਸਾਫ਼ ਕਰੋ',
+    openFullView: 'ਪੂਰਾ AI ਵਰਕਸਪੇਸ',
+    thinking: 'Gemini PHC ਸੰਦਰਭ ਦਾ ਵਿਸ਼ਲੇਸ਼ਣ ਕਰ ਰਿਹਾ ਹੈ…',
+    readOnlyBadge: 'ਡੈਮੋ / ਸਿਰਫ਼-ਪੜ੍ਹਨ ਮੋਡ',
+    authorizedBadge: 'ਅਧਿਕਾਰਤ ਅਫਸਰ',
+    unlockAccess: 'ਅਫਸਰ ਐਕਸੈਸ ਅਨਲੌਕ ਕਰੋ',
+    safetyNotice: 'ਸਿਰਫ਼ ਸਲਾਹਕਾਰੀ · ਲਾਈਵ PHC ਟੈਲੀਮੈਟਰੀ ਤੇ ਆਧਾਰਿਤ'
+  },
   ta: {
-    assistantTitle: 'Gemini AI செயல்பாட்டு உதவியாளர்',
+    assistantTitle: 'Ask Gemini · AI கட்டுப்பாட்டு மையம்',
     assistantSubtitle: 'நேரடி MEDRESQ விநியோகத் தரவு அடிப்படையிலானது',
     activeFacility: 'நிலையம் (PHC)',
     pageContext: 'பக்க சூழல்',
-    quickActionsTitle: 'விரைவு செயல்பாட்டு சோதனைகள்',
-    inputPlaceholder: 'குறைந்த இருப்பு, காலாவதி, இடமாற்றம், எச்சரிக்கை பற்றி கேட்கவும்...',
-    send: 'அனுப்பு',
+    quickActionsTitle: 'பரிந்துரைக்கப்பட்ட கேள்விகள்',
+    inputPlaceholder: 'கேட்கவும்: "இன்று எந்த மருந்துகள் குறைவாக உள்ளன?"...',
+    send: 'Ask Gemini',
     clearChat: 'உரையாடலை அழி',
     openFullView: 'முழு பணியிடம்',
-    thinking: 'Gemini சரிபார்க்கப்பட்ட MEDRESQ தரவை ஆய்வு செய்கிறது...',
+    thinking: 'Gemini PHC சூழலை பகுப்பாய்வு செய்கிறது…',
     readOnlyBadge: 'டெமோ / படிக்க மட்டும்',
     authorizedBadge: 'அங்கீகரிக்கப்பட்ட அதிகாரி',
     unlockAccess: 'அதிகாரி அணுகலைத் திற',
     safetyNotice: 'ஆலோசனை மட்டுமே · கற்பனை தரவு இல்லை · தன்னிச்சையான மருந்து பரிந்துரை இல்லை'
   },
   te: {
-    assistantTitle: 'Gemini AI ఆపరేషనల్ అసిస్టెంట్',
+    assistantTitle: 'Ask Gemini · AI కమాండ్ సెంటర్',
     assistantSubtitle: 'ప్రత్యక్ష MEDRESQ సరఫరా డేటా ఆధారంగా',
     activeFacility: 'కేంద్రం (PHC)',
     pageContext: 'పేజీ సందర్భం',
-    quickActionsTitle: 'త్వరిత ఆపరేషనల్ తనిఖీలు',
-    inputPlaceholder: 'తక్కువ నిల్వ, గడువు, బదిలీలు, హెచ్చరికలు లేదా అంచనాల గురించి అడగండి...',
-    send: 'పంపు',
+    quickActionsTitle: 'సూచించిన ప్రశ్నలు & తనిఖీలు',
+    inputPlaceholder: 'అడగండి: "ఈరోజు ఏ మందులు తక్కువగా ఉన్నాయి?"...',
+    send: 'Ask Gemini',
     clearChat: 'చాట్ క్లియర్ చేయి',
     openFullView: 'పూర్తి వర్క్‌స్పేస్',
-    thinking: 'Gemini ధృవీకరించబడిన MEDRESQ డేటాను విశ్లేషిస్తోంది...',
+    thinking: 'Gemini PHC సందర్భాన్ని విశ్లేషిస్తోంది…',
     readOnlyBadge: 'డెమో / రీడ్-ఓన్లీ మోడ్',
     authorizedBadge: 'అధికారిక అధికారి',
     unlockAccess: 'ఆఫీసర్ యాక్సెస్ అన్‌లాక్',
     safetyNotice: 'సలహా మాత్రమే · కల్పిత డేటా లేదు · స్వతంత్ర మందుల సూచన లేదు'
+  },
+  ml: {
+    assistantTitle: 'Ask Gemini · AI കമാൻഡ് സെന്റർ',
+    assistantSubtitle: 'തത്സമയ MEDRESQ PHC ഡാറ്റയെ അടിസ്ഥാനമാക്കിയുള്ളത്',
+    activeFacility: 'കേന്ദ്രം (PHC)',
+    pageContext: 'പേജ് പശ്ചാത്തലം',
+    quickActionsTitle: 'നിർദ്ദേശിച്ച ചോദ്യങ്ങളും പരിശോധനകളും',
+    inputPlaceholder: 'ചോദിക്കുക: "ഇന്ന് ഏതൊക്കെ മരുന്നുകളാണ് കുറവുള്ളത്?"...',
+    send: 'Ask Gemini',
+    clearChat: 'ചാറ്റ് മായ്ക്കുക',
+    openFullView: 'പൂർണ്ണ AI വർക്ക്‌സ്‌പേസ്',
+    thinking: 'Gemini പിഎച്ച്സി സാഹചര്യം വിശകലനം ചെയ്യുന്നു…',
+    readOnlyBadge: 'ഡെമോ / റീഡ്-ഒൺലി മോഡ്',
+    authorizedBadge: 'അംഗീകൃത ഓഫീസർ',
+    unlockAccess: 'ഓഫീസർ ആക്സസ് അൺലോക്ക് ചെയ്യുക',
+    safetyNotice: 'ഉപദേശം മാത്രം · തത്സമയ PHC ടെലിമെട്രി അടിസ്ഥാനമാക്കി'
   }
 };
+
+interface RelatedModuleAction {
+  moduleId: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}
+
+function getRelatedModulesForContent(content: string, activeModule: string): RelatedModuleAction[] {
+  const lower = content.toLowerCase();
+  const actions: RelatedModuleAction[] = [];
+
+  if (
+    lower.includes('stock') ||
+    lower.includes('inventory') ||
+    lower.includes('fefo') ||
+    lower.includes('batch') ||
+    lower.includes('expir') ||
+    lower.includes('ors') ||
+    lower.includes('saline') ||
+    lower.includes('oxytocin') ||
+    lower.includes('paracetamol')
+  ) {
+    actions.push({ moduleId: 'medicine', label: 'View Medicine Inventory', icon: Pill });
+  }
+  if (
+    lower.includes('forecast') ||
+    lower.includes('surge') ||
+    lower.includes('heat') ||
+    lower.includes('monsoon') ||
+    lower.includes('weather') ||
+    lower.includes('demand')
+  ) {
+    actions.push({ moduleId: 'preparedness', label: 'View Demand Forecast', icon: CloudSun });
+  }
+  if (
+    lower.includes('order') ||
+    lower.includes('replenish') ||
+    lower.includes('reorder') ||
+    lower.includes('indent') ||
+    lower.includes('transfer') ||
+    lower.includes('redistribut')
+  ) {
+    actions.push({ moduleId: 'orders', label: 'Go to Orders & Transfers', icon: Truck });
+  }
+  if (lower.includes('map') || lower.includes('nearby') || lower.includes('peer') || lower.includes('chc')) {
+    actions.push({ moduleId: 'map', label: 'Open Network Stock Map', icon: MapPin });
+  }
+  if (lower.includes('alert') || lower.includes('threshold') || lower.includes('warning')) {
+    actions.push({ moduleId: 'alerts', label: 'Open Alert Centre', icon: Bell });
+  }
+
+  if (actions.length === 0) {
+    if (activeModule !== 'medicine') {
+      actions.push({ moduleId: 'medicine', label: 'View Medicine Inventory', icon: Pill });
+    }
+    if (activeModule !== 'orders') {
+      actions.push({ moduleId: 'orders', label: 'Go to Orders & Transfers', icon: Truck });
+    }
+  }
+
+  return actions.slice(0, 3);
+}
 
 export const GeminiAssistantDrawer: React.FC = () => {
   const {
@@ -333,6 +572,7 @@ export const GeminiAssistantDrawer: React.FC = () => {
     activeModule,
     setActiveModule,
     medicines,
+    weather,
     orders,
     redistributions,
     alerts,
@@ -351,8 +591,14 @@ export const GeminiAssistantDrawer: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const langKey: 'en' | 'hi' | 'ta' | 'te' =
-    language === 'hi' || language === 'ta' || language === 'te' ? language : 'en';
+  const langKey: SupportedLanguageCode =
+    language === 'hi' ||
+    language === 'pa' ||
+    language === 'ta' ||
+    language === 'te' ||
+    language === 'ml'
+      ? language
+      : 'en';
   const ui = UI_TEXT[langKey];
   const currentLangMeta =
     SUPPORTED_LANGUAGES.find((l) => l.code === langKey) || SUPPORTED_LANGUAGES[0];
@@ -393,6 +639,49 @@ export const GeminiAssistantDrawer: React.FC = () => {
     MODULE_CONTEXT_PROMPTS[activeModule]?.[langKey] ||
     MODULE_CONTEXT_PROMPTS.dashboard[langKey];
 
+  const buildPageContextSummary = () => {
+    const topCriticalNames = inventoryMetrics.criticalItems.map((m) => m.name).join(', ') || 'None';
+    const topWarningNames = inventoryMetrics.warningItems.map((m) => m.name).join(', ') || 'None';
+    const topSurge = weather?.vulnerableMedicines?.[0]
+      ? `${weather.seasonalProfile} (+${weather.vulnerableMedicines[0].demandSurgePercent}% ${weather.vulnerableMedicines[0].medicineName})`
+      : weather?.seasonalProfile || 'Standard';
+
+    return [
+      `Active Module: ${activeModule} (${moduleTitle})`,
+      `Active PHC: ${selectedPHC.name} (${selectedPHC.id}, ${selectedPHC.district})`,
+      `Readiness Score: ${facilityMetrics.serviceReadinessScore}%`,
+      `Stockout Risk Count: ${facilityMetrics.stockoutRiskCount} (${facilityMetrics.criticalCount} critical [${topCriticalNames}], ${facilityMetrics.warningCount} warning [${topWarningNames}])`,
+      `Forecast Context: ${topSurge} at ${weather?.temperatureC ?? 34}°C`,
+      `Expiring <=90d: ${facilityMetrics.expiringWithin90dCount} (${facilityMetrics.expiringWithin30dCount} <=30d)`,
+      `Pending Orders: ${facilityMetrics.pendingOrdersCount}`,
+      `Pending Transfers: ${facilityMetrics.pendingTransfersCount}`,
+      `Active Alerts: ${alertMetrics.activeAlertsCount}`
+    ].join(' | ');
+  };
+
+  // Listen for custom 'medresq:ask-gemini' events from any card or module
+  useEffect(() => {
+    const handleAskGeminiEvent = (e: Event) => {
+      const customEvent = e as CustomEvent<{ prompt?: string; autoSend?: boolean }>;
+      setIsGeminiAssistantOpen(true);
+      const requestedPrompt = customEvent.detail?.prompt;
+      if (requestedPrompt) {
+        if (customEvent.detail?.autoSend !== false) {
+          void sendChatMessage(
+            requestedPrompt,
+            'clinical_officer',
+            'general',
+            buildPageContextSummary()
+          );
+        } else {
+          setInput(requestedPrompt);
+        }
+      }
+    };
+    window.addEventListener('medresq:ask-gemini', handleAskGeminiEvent);
+    return () => window.removeEventListener('medresq:ask-gemini', handleAskGeminiEvent);
+  });
+
   // Auto-scroll on new messages when drawer is open
   useEffect(() => {
     if (isGeminiAssistantOpen) {
@@ -418,19 +707,6 @@ export const GeminiAssistantDrawer: React.FC = () => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isGeminiAssistantOpen, setIsGeminiAssistantOpen]);
-
-  const buildPageContextSummary = () => {
-    return [
-      `Active Module: ${activeModule} (${moduleTitle})`,
-      `Active PHC: ${selectedPHC.name} (${selectedPHC.id}, ${selectedPHC.district})`,
-      `Readiness Score: ${facilityMetrics.serviceReadinessScore}%`,
-      `Stockout Risk Count: ${facilityMetrics.stockoutRiskCount} (${facilityMetrics.criticalCount} critical, ${facilityMetrics.warningCount} warning)`,
-      `Expiring <=90d: ${facilityMetrics.expiringWithin90dCount} (${facilityMetrics.expiringWithin30dCount} <=30d)`,
-      `Pending Orders: ${facilityMetrics.pendingOrdersCount}`,
-      `Pending Transfers: ${facilityMetrics.pendingTransfersCount}`,
-      `Active Alerts: ${alertMetrics.activeAlertsCount}`
-    ].join(' | ');
-  };
 
   const handleSend = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -608,24 +884,37 @@ export const GeminiAssistantDrawer: React.FC = () => {
           </div>
         </div>
 
-        {/* Quick Action Buttons */}
-        <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 shrink-0">
-          <div className="flex items-center justify-between gap-2 mb-1.5">
-            <span className="text-[10px] font-mono uppercase tracking-wider font-bold text-slate-500">
-              {ui.quickActionsTitle}
-            </span>
+        {/* Context-Aware Prompt & Suggested Prompts Strip */}
+        <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 shrink-0 space-y-2">
+          {/* Context-Aware Active Module Prompt Card */}
+          <div className="p-2.5 rounded-xl bg-linear-to-r from-indigo-50/90 via-teal-50/80 to-emerald-50/80 border border-teal-200/80 flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 text-[10px] font-mono font-bold uppercase tracking-wider text-teal-800">
+                <Compass className="w-3 h-3 text-teal-600 shrink-0" />
+                <span>Context-Aware · {moduleTitle}</span>
+              </div>
+              <p className="text-[11px] font-semibold text-slate-800 truncate mt-0.5">
+                “{contextualPrompt}”
+              </p>
+            </div>
             <button
               type="button"
               disabled={isChatLoading}
               onClick={() => handleQuickPrompt(contextualPrompt)}
-              className="text-[10px] font-mono font-bold text-teal-700 hover:text-teal-900 underline cursor-pointer disabled:opacity-50 truncate max-w-[230px]"
-              title={contextualPrompt}
+              className="px-2.5 py-1.5 rounded-lg bg-teal-700 hover:bg-teal-800 text-white text-[11px] font-bold flex items-center gap-1 shrink-0 transition-all cursor-pointer disabled:opacity-50 shadow-2xs"
             >
-              + {contextualPrompt}
+              <Sparkles className="w-3 h-3 text-teal-200" />
+              <span>Ask Now</span>
             </button>
           </div>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] font-mono uppercase tracking-wider font-bold text-slate-500">
+              {ui.quickActionsTitle}
+            </span>
+          </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-            {QUICK_ACTIONS.map((action) => {
+            {SUGGESTED_PROMPTS.map((action) => {
               const Icon = action.icon;
               return (
                 <button
@@ -664,6 +953,11 @@ export const GeminiAssistantDrawer: React.FC = () => {
         <div className="flex-1 overflow-y-auto p-4 space-y-3.5 bg-slate-50/50">
           {chatMessages.map((msg) => {
             const isUser = msg.role === 'user';
+            const relatedModules = !isUser
+              ? getRelatedModulesForContent(msg.content, activeModule)
+              : [];
+            const topRiskMed = inventoryMetrics.criticalItems[0] || inventoryMetrics.warningItems[0];
+
             return (
               <div
                 key={msg.id}
@@ -680,10 +974,10 @@ export const GeminiAssistantDrawer: React.FC = () => {
                 </div>
 
                 <div
-                  className={`max-w-[85%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed shadow-2xs ${
+                  className={`max-w-[88%] rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed shadow-2xs ${
                     isUser
                       ? 'bg-teal-700 text-white rounded-tr-xs'
-                      : 'bg-white text-slate-800 border border-slate-200/90 rounded-tl-xs'
+                      : 'bg-white text-slate-800 border border-slate-200/90 rounded-tl-xs space-y-2.5'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-3 mb-1">
@@ -692,7 +986,7 @@ export const GeminiAssistantDrawer: React.FC = () => {
                         isUser ? 'text-teal-100' : 'text-teal-700'
                       }`}
                     >
-                      {isUser ? 'You' : '✨ Gemini AI'}
+                      {isUser ? 'You · Question' : '✨ Gemini Operational Response'}
                     </span>
                     <div className="flex items-center gap-1.5">
                       {!isUser && msg.modelUsed && (
@@ -711,19 +1005,73 @@ export const GeminiAssistantDrawer: React.FC = () => {
                   </div>
 
                   <div className="whitespace-pre-wrap break-words font-sans">{msg.content}</div>
+
+                  {/* Structured Operational Context Footer for Gemini Responses */}
+                  {!isUser && (
+                    <div className="pt-2 border-t border-slate-100 space-y-2">
+                      {/* Live PHC Risk & Recommended Action Strip when relevant */}
+                      {topRiskMed && (
+                        <div className="p-2 rounded-lg bg-slate-50 border border-slate-200/80 text-[11px] space-y-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-mono font-bold uppercase text-[9px] text-rose-700 flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3 text-rose-600 shrink-0" />
+                              Active PHC Risk Signal · {selectedPHC.code}
+                            </span>
+                            <span className="font-mono text-[9px] text-slate-500">
+                              {facilityMetrics.criticalCount} Crit · {facilityMetrics.warningCount} Warn
+                            </span>
+                          </div>
+                          <div className="text-slate-700">
+                            <strong>Key Finding:</strong> {topRiskMed.name} ({topRiskMed.currentStock}{' '}
+                            {topRiskMed.unit} vs min {topRiskMed.minStockLevel} {topRiskMed.unit}).
+                          </div>
+                          <div className="text-teal-900 font-medium">
+                            <strong>Recommended Action:</strong> Review safety buffer replenishment or approve lateral PHC transfer.
+                          </div>
+                        </div>
+                      )}
+
+                      {/* View Related Module / Go to Source Action Buttons */}
+                      {relatedModules.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                          <span className="text-[10px] font-mono text-slate-400 uppercase">
+                            Go to source:
+                          </span>
+                          {relatedModules.map((mod) => {
+                            const ModIcon = mod.icon;
+                            return (
+                              <button
+                                key={mod.moduleId}
+                                type="button"
+                                onClick={() => {
+                                  setActiveModule(mod.moduleId);
+                                  setIsGeminiAssistantOpen(false);
+                                }}
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-teal-50 hover:bg-teal-100 text-teal-900 border border-teal-200 text-[10px] font-bold transition-colors cursor-pointer"
+                              >
+                                <ModIcon className="w-3 h-3 text-teal-700 shrink-0" />
+                                <span>{mod.label}</span>
+                                <ArrowRight className="w-2.5 h-2.5 text-teal-600 shrink-0" />
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             );
           })}
 
           {isChatLoading && (
-            <div className="flex gap-2.5">
+            <div className="flex gap-2.5 animate-in fade-in duration-150">
               <div className="w-7 h-7 rounded-lg bg-slate-900 text-teal-400 flex items-center justify-center shrink-0">
-                <Bot className="w-3.5 h-3.5 animate-pulse" />
+                <Sparkles className="w-3.5 h-3.5 animate-pulse" />
               </div>
-              <div className="bg-white border border-slate-200 rounded-2xl rounded-tl-xs px-3.5 py-2.5 text-xs text-slate-600 flex items-center gap-2 shadow-2xs">
+              <div className="bg-white border border-teal-200 rounded-2xl rounded-tl-xs px-3.5 py-2.5 text-xs text-slate-700 flex items-center gap-2 shadow-2xs">
                 <RefreshCw className="w-3.5 h-3.5 text-teal-600 animate-spin shrink-0" />
-                <span>{ui.thinking}</span>
+                <span className="font-medium">{ui.thinking}</span>
               </div>
             </div>
           )}
