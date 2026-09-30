@@ -24,12 +24,23 @@ import {
   Zap,
   KeyRound,
   ShieldCheck,
-  UserPlus
+  UserPlus,
+  Clock,
+  Wifi,
+  WifiOff,
+  RefreshCw,
+  BellRing
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext.tsx';
 import { StatusBadge } from '../ui/StatusBadge.tsx';
 import { evaluateMedicineThresholdAndReplenishment } from '../../utils/inventoryForecast.ts';
 import { getPHCInchargeCredential } from '../../utils/phcAuthDirectory.ts';
+import {
+  getDatasetFacilityMetrics,
+  getCanonicalMedicineInventoryMetrics,
+  getCanonicalOrderMetrics,
+  getCanonicalAlertMetrics
+} from '../../utils/datasetMetrics.ts';
 
 export const HomeOverview: React.FC = () => {
   const {
@@ -44,10 +55,23 @@ export const HomeOverview: React.FC = () => {
     createOrder,
     openBulkRestockPreview,
     approveRedistribution,
+    rejectRedistribution,
     showNotification,
     inchargeSession,
-    openAuthModal
+    openAuthModal,
+    proactiveStockAlerts,
+    acknowledgeAlert,
+    offlineQueue,
+    isOfflineMode,
+    toggleOfflineMode,
+    isQueueSyncing,
+    syncOfflineQueue,
+    addMockOfflineRecord,
+    staff,
+    t
   } = useApp();
+
+  const presentStaffTodayCount = staff.filter((s) => s.status === 'PRESENT').length;
 
   const currentCredential = getPHCInchargeCredential(selectedPHC);
 
@@ -61,13 +85,34 @@ export const HomeOverview: React.FC = () => {
 
   const selectedQuickMed = medicines.find((m) => m.id === quickMedId) || medicines[0];
 
-  const criticalAlerts = alerts.filter((a) => a.status === 'ACTIVE' && a.category === 'CRITICAL');
-  const criticalStockMeds = medicines.filter((m) => m.stockoutRisk === 'CRITICAL');
-  const warningStockMeds = medicines.filter((m) => m.stockoutRisk === 'WARNING');
-  const attentionMeds = [...criticalStockMeds, ...warningStockMeds];
-  const incomingDeliveries = orders.filter(
-    (o) => o.status === 'IN TRANSIT' || o.status === 'DISPATCHED' || o.status === 'REQUESTED' || o.status === 'APPROVAL PENDING'
+  const datasetFacilityMetrics = getDatasetFacilityMetrics();
+  const canonicalMedMetrics = getCanonicalMedicineInventoryMetrics(medicines);
+  const canonicalOrderMetrics = getCanonicalOrderMetrics(orders, redistributions);
+  const canonicalAlertMetrics = getCanonicalAlertMetrics(alerts, proactiveStockAlerts);
+
+  const criticalAlerts = alerts.filter((a) => a.status !== 'RESOLVED' && a.category === 'CRITICAL');
+  const activeAlertsList = canonicalAlertMetrics.activeAlerts;
+  const criticalStockMeds = canonicalMedMetrics.criticalItems;
+  const warningStockMeds = canonicalMedMetrics.warningItems;
+  const attentionMeds = canonicalMedMetrics.lowStockItems;
+  const expiringSoonMeds = canonicalMedMetrics.expiringSoonItems;
+  const pendingReviewRedistributions = redistributions.filter(
+    (r) => r.status === 'PENDING_REVIEW' || r.status === 'PROPOSED'
   );
+  const queuedOrFailedOfflineItems = offlineQueue.filter((item) => item.status !== 'SYNCED');
+  const failedOfflineItems = offlineQueue.filter((item) => item.status === 'FAILED_RETRY');
+  const incomingDeliveries = orders.filter(
+    (o) => o.status !== 'RECEIVED' && o.status !== 'DELIVERED' && o.status !== 'CANCELLED'
+  );
+
+  const openMedicineInInventory = (medicineId: string) => {
+    setActiveModule('medicine');
+    setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent('medresq:global-search', { detail: { medicineId } })
+      );
+    }, 50);
+  };
 
   // 1-Click Quick Dispense Handler (Single Medicine)
   const handleQuickDispenseSubmit = async (e: React.FormEvent) => {
@@ -97,7 +142,6 @@ export const HomeOverview: React.FC = () => {
       return;
     }
     await consumeMedicine(medId, qty, 'Quick 1-Click OPD Dispense');
-    showNotification(`Dispensed ${qty} ${unit} of ${medName}.`);
   };
 
   // 1-Click Instant Reorder for a Single Medicine
@@ -143,44 +187,57 @@ export const HomeOverview: React.FC = () => {
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
             <div className="space-y-1.5">
               <div className="flex flex-wrap items-center gap-2 text-xs">
-                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-400/20 border border-emerald-400/30 text-emerald-200 font-bold text-[11px]">
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-300" />
-                  <span>Incharge: {inchargeSession?.inchargeName || currentCredential.inchargeName}</span>
-                </span>
-                <span className="px-2.5 py-0.5 rounded-full bg-amber-400/20 border border-amber-400/30 text-amber-200 font-mono text-[11px] font-bold">
-                  DEMO ONLY • Credential: {currentCredential.maskedCredential}
+                {!inchargeSession ? (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-400/20 border border-amber-300/40 text-amber-200 font-bold font-mono text-[11px]">
+                    DEMO / READ-ONLY MODE
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-400/20 border border-emerald-400/30 text-emerald-200 font-bold text-[11px]">
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-300" />
+                    <span>
+                      Officer: {inchargeSession.officerName || inchargeSession.inchargeName || currentCredential.inchargeName}
+                    </span>
+                  </span>
+                )}
+                <span className="px-2.5 py-0.5 rounded-full bg-teal-400/20 border border-teal-400/30 text-teal-100 font-mono text-[11px] font-bold">
+                  Assigned Officer ID: {inchargeSession?.officerId || currentCredential.officerId} · {inchargeSession?.designation || 'MOIC'}
                 </span>
                 <span className="text-emerald-200/80 font-mono text-[11px]">
-                  {selectedPHC.code} · {selectedPHC.block}, {selectedPHC.district}
+                  {selectedPHC.code} · {selectedPHC.block}, {selectedPHC.district}, {selectedPHC.state}
                 </span>
               </div>
 
               <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
-                {selectedPHC.name} — Friendly Supply &amp; Forecast Command Hub
+                {selectedPHC.name} — Operational Supply &amp; Forecast Command Hub
               </h1>
 
               <p className="text-xs text-emerald-100/85 max-w-2xl leading-relaxed">
-                Welcome back! Monitor configurable demo medicine buffers, dispense stock, inspect district-specific seasonal demand surges, and preview simulated replenishment orders.
+                {inchargeSession ? (
+                  <>
+                    Authenticated session bound to <strong>{selectedPHC.name}</strong>. Monitor medicine buffers, dispense FEFO stock, inspect district-specific seasonal demand surges, and review replenishment orders.
+                  </>
+                ) : (
+                  <>
+                    Viewing <strong>{selectedPHC.name}</strong> in public <strong>DEMO / READ-ONLY MODE</strong>. Explore supply overview, medicine inventory, demand forecasts, orders, and network stock maps freely; supply-chain modifications require authorized access.
+                  </>
+                )}
               </p>
             </div>
 
-            {/* PHC Incharge Account & Directory Shortcuts */}
+            {/* Bound PHC Session Status / Admin Authorized Access */}
             <div className="flex flex-wrap items-center gap-2 shrink-0">
               <button
                 type="button"
-                onClick={() => openAuthModal('directory')}
+                onClick={() => openAuthModal('signin', selectedPHC)}
                 className="px-3.5 py-2 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-white text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
+                title={inchargeSession ? 'Inspect Authenticated Officer Session' : 'Admin / Authorized Access'}
               >
-                <KeyRound className="w-3.5 h-3.5 text-amber-300" />
-                <span>PHC Incharge Directory (53)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => openAuthModal('signup', selectedPHC)}
-                className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
-              >
-                <UserPlus className="w-3.5 h-3.5" />
-                <span>Configure Demo Account</span>
+                <KeyRound className="w-3.5 h-3.5 text-emerald-300" />
+                <span>
+                  {inchargeSession
+                    ? `Session Bound: ${selectedPHC.code} (${inchargeSession.officerId})`
+                    : 'Admin / Authorized Access'}
+                </span>
               </button>
             </div>
           </div>
@@ -246,7 +303,9 @@ export const HomeOverview: React.FC = () => {
               <div className="text-xs font-bold text-slate-900 mt-1.5 group-hover:text-teal-900">
                 Network Stock Map
               </div>
-              <div className="text-[10px] text-slate-500 truncate">53 PHCs &amp; routes</div>
+              <div className="text-[10px] text-slate-500 truncate">
+                {datasetFacilityMetrics.networkMapTotalCount} nodes ({datasetFacilityMetrics.samplePhcTotalCount} PHCs + {datasetFacilityMetrics.networkMapUnmappedCount} CHCs/Depots)
+              </div>
             </button>
 
             <button
@@ -310,6 +369,25 @@ export const HomeOverview: React.FC = () => {
             </div>
 
             <div className="flex flex-wrap items-center gap-2 text-slate-500">
+              {/* Compact Staff Today Summary linking to Staff Attendance module */}
+              <div className="flex items-center gap-2 bg-teal-50/70 px-3 py-1.5 rounded-xl border border-teal-200 text-slate-800">
+                <Users className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                <span className="font-medium">
+                  {t.attendance.staffToday}:{' '}
+                  <strong className="font-mono text-teal-900">
+                    {presentStaffTodayCount} / {staff.length} {t.attendance.present}
+                  </strong>
+                </span>
+                <button
+                  type="button"
+                  id="overview-view-attendance-btn"
+                  onClick={() => setActiveModule('attendance')}
+                  className="ml-1 px-2.5 py-0.5 rounded-lg bg-teal-700 hover:bg-teal-800 text-white text-[11px] font-bold transition-colors cursor-pointer"
+                >
+                  {t.attendance.viewAttendance}
+                </button>
+              </div>
+
               <button
                 type="button"
                 onClick={() => setActiveModule('records')}
@@ -323,7 +401,7 @@ export const HomeOverview: React.FC = () => {
                 onClick={() => setActiveModule('directory')}
                 className="px-3 py-1.5 rounded-xl bg-slate-50 hover:bg-sky-50 border border-slate-200 text-slate-700 font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
               >
-                <span>NLEM Drug Catalogue (51)</span>
+                <span>NLEM Drug Catalogue ({datasetFacilityMetrics.nlemCatalogueCount} NLEM · {medicines.length} Facility Items)</span>
               </button>
             </div>
           </div>
@@ -381,12 +459,17 @@ export const HomeOverview: React.FC = () => {
                 {criticalStockMeds.length > 0
                   ? `${criticalStockMeds.length} Critical`
                   : warningStockMeds.length > 0
-                  ? `${warningStockMeds.length} Low`
+                  ? `${warningStockMeds.length} Warning`
                   : 'All Healthy'}
               </span>
+              {warningStockMeds.length > 0 && criticalStockMeds.length > 0 && (
+                <span className="text-xs font-mono font-bold text-amber-700">
+                  +{warningStockMeds.length} Warning ({attentionMeds.length} Low Total)
+                </span>
+              )}
             </div>
             <p className="text-xs text-slate-500 mt-1">
-              {medicines.length} essential medicines tracked
+              {medicines.length} facility items tracked ({canonicalMedMetrics.normalCount} Normal · {canonicalMedMetrics.surplusCount} Surplus)
             </p>
           </div>
           <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-semibold text-emerald-700">
@@ -408,11 +491,14 @@ export const HomeOverview: React.FC = () => {
             </div>
             <div className="mt-2 flex items-baseline gap-2">
               <span className="text-2xl font-bold font-mono tabular-nums text-slate-900">
-                {orders.length} Orders
+                {canonicalOrderMetrics.activeOrdersCount} Active
+              </span>
+              <span className="text-xs font-mono text-slate-500">
+                ({canonicalOrderMetrics.totalOrdersCount} Total Indents)
               </span>
             </div>
             <p className="text-xs text-slate-500 mt-1">
-              {incomingDeliveries.length} active indents in pipeline
+              {canonicalOrderMetrics.activeOrdersCount} in pipeline · {canonicalOrderMetrics.completedOrdersCount} delivered
             </p>
           </div>
           <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-semibold text-sky-700">
@@ -434,11 +520,14 @@ export const HomeOverview: React.FC = () => {
             </div>
             <div className="mt-2 flex items-baseline gap-2">
               <span className="text-2xl font-bold font-mono tabular-nums text-slate-900">
-                {redistributions.filter((r) => r.status === 'PROPOSED' || r.status === 'PENDING_REVIEW').length} Suggested
+                {canonicalOrderMetrics.pendingTransfersCount} Suggested
+              </span>
+              <span className="text-xs font-mono text-slate-500">
+                ({canonicalOrderMetrics.totalTransfersCount} Total)
               </span>
             </div>
             <p className="text-xs text-slate-500 mt-1">
-              {redistributions.filter((r) => r.status === 'APPROVED' || r.status === 'IN_TRANSIT' || r.status === 'COMPLETED').length} transfers approved/in-transit
+              {canonicalOrderMetrics.approvedTransfersCount} transfers approved/in-transit
             </p>
           </div>
           <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-semibold text-slate-700">
@@ -479,151 +568,569 @@ export const HomeOverview: React.FC = () => {
         </button>
       </div>
 
-      {/* 4. Main Interactive Workspace: Left = Low Stock Action Table, Right = STG Clinical Protocol & Quick Dispense */}
+      {/* 4. Main Interactive Workspace: Priority Clinical Command Center Sections */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left 7 Columns: Medicines Needing Action Today (1-Click Order or Dispense) */}
-        <div className="lg:col-span-7 bg-white rounded-xl border border-slate-200 flex flex-col justify-between overflow-hidden">
-          <div>
-            <div className="p-5 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div>
-                <h2 className="text-base font-bold text-slate-900">
-                  Medicines Running Low ({attentionMeds.length})
-                </h2>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Order replacement stock or dispense directly with a single click
-                </p>
+        {/* Left 7 Columns: 1. CRITICAL SHORTAGES + 3. EXPIRY RISKS + 4. ACTIVE ALERTS */}
+        <div className="lg:col-span-7 space-y-6">
+          {/* SECTION 1: CRITICAL SHORTAGES */}
+          <div className="bg-white rounded-xl border border-slate-200 flex flex-col justify-between overflow-hidden">
+            <div>
+              <div className="p-4 sm:p-5 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-rose-50/40">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-rose-100 text-rose-900 border border-rose-300">
+                      Priority 1 · Critical Shortages
+                    </span>
+                    <span className="text-xs font-mono font-bold text-slate-700">
+                      {criticalStockMeds.length} Critical · {warningStockMeds.length} Warning ({attentionMeds.length} Total)
+                    </span>
+                  </div>
+                  <h2 className="text-base font-bold text-slate-900 mt-1">
+                    Critical Shortages &amp; Safety Buffer Breaches ({attentionMeds.length})
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Medicines below required facility safety levels with days of stock remaining and direct actions
+                  </p>
+                </div>
+
+                {attentionMeds.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleRestockAllLowMedicines}
+                    disabled={isOrderingAll}
+                    className="px-3.5 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer shrink-0"
+                  >
+                    <PackageCheck className="w-4 h-4" />
+                    <span>
+                      {isOrderingAll
+                        ? 'Ordering...'
+                        : `Order All ${attentionMeds.length} Low Items`}
+                    </span>
+                  </button>
+                )}
               </div>
 
-              {attentionMeds.length > 0 && (
-                <button
-                  type="button"
-                  onClick={handleRestockAllLowMedicines}
-                  disabled={isOrderingAll}
-                  className="px-3.5 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer shrink-0"
-                >
-                  <PackageCheck className="w-4 h-4" />
-                  <span>
-                    {isOrderingAll
-                      ? 'Ordering...'
-                      : `Order All ${attentionMeds.length} Low Items`}
+              <div className="divide-y divide-slate-100">
+                {(attentionMeds.length > 0 ? attentionMeds : medicines.slice(0, 4)).map(
+                  (med) => {
+                    const evalRes =
+                      canonicalMedMetrics.evaluationsByMedId[med.id] ||
+                      evaluateMedicineThresholdAndReplenishment(med);
+                    const isCrit = evalRes.riskLevel === 'CRITICAL';
+                    const suggestedOrderQty = evalRes.recommendedOrderQty;
+                    const matchingPendingRec = pendingReviewRedistributions.find((r) =>
+                      r.medicineName.toLowerCase().includes(med.name.split(' ')[0].toLowerCase())
+                    );
+
+                    return (
+                      <div
+                        key={med.id}
+                        className="p-4 hover:bg-slate-50 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                      >
+                        <div className="min-w-0 space-y-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <StatusBadge
+                              status={evalRes.riskLevel}
+                              text={
+                                isCrit
+                                  ? 'Critical Shortage'
+                                  : evalRes.riskLevel === 'WARNING'
+                                  ? 'Below Safety Buffer'
+                                  : 'Healthy'
+                              }
+                            />
+                            <span className="font-bold text-sm text-slate-900 truncate">
+                              {med.name}
+                            </span>
+                            {evalRes.pendingOrders > 0 && (
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-mono font-bold">
+                                +{evalRes.pendingOrders} In Pipeline
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 font-mono tabular-nums">
+                            <span>
+                              Current Stock:{' '}
+                              <strong className="text-slate-900">
+                                {evalRes.usableStock.toLocaleString()} {med.unit}
+                              </strong>
+                            </span>
+                            <span aria-hidden="true">·</span>
+                            <span>
+                              Required Safety Level:{' '}
+                              <strong className="text-slate-800">
+                                {med.minStockLevel.toLocaleString()} {med.unit}
+                              </strong>
+                            </span>
+                            <span aria-hidden="true">·</span>
+                            <span
+                              className={
+                                isCrit
+                                  ? 'text-rose-700 font-bold'
+                                  : 'text-amber-700 font-semibold'
+                              }
+                            >
+                              Days of Stock: {evalRes.usableDaysOfCover} days
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Direct Actions to Inventory or Relevant Recommendation */}
+                        <div className="flex flex-wrap items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => openMedicineInInventory(med.id)}
+                            className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold flex items-center gap-1 transition-colors whitespace-nowrap cursor-pointer"
+                          >
+                            <span>Inventory</span>
+                            <ArrowRight className="w-3 h-3" />
+                          </button>
+
+                          {matchingPendingRec ? (
+                            <button
+                              type="button"
+                              onClick={() => approveRedistribution(matchingPendingRec.id)}
+                              className="px-2.5 py-1.5 rounded-lg bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold flex items-center gap-1 transition-colors whitespace-nowrap cursor-pointer"
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5 text-teal-200" />
+                              <span>Review Transfer (+{matchingPendingRec.recommendedTransferQuantity})</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleInstantOrder(med.name, suggestedOrderQty, isCrit)
+                              }
+                              className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold flex items-center gap-1 transition-colors whitespace-nowrap cursor-pointer"
+                            >
+                              <Plus className="w-3 h-3 text-emerald-400" />
+                              <span>Order +{suggestedOrderQty}</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  }
+                )}
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs">
+              <span className="text-slate-600">
+                Incoming deliveries in transit:{' '}
+                <strong className="font-mono text-slate-900">
+                  {incomingDeliveries.length}
+                </strong>
+              </span>
+              <button
+                type="button"
+                onClick={() => setActiveModule('medicine')}
+                className="font-semibold text-emerald-700 hover:text-emerald-800 flex items-center gap-1 cursor-pointer"
+              >
+                <span>View Full Medicine Inventory ({medicines.length})</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          {/* SECTION 3: EXPIRY RISKS (FEFO Priority) */}
+          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-amber-50/40">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300">
+                    Priority 3 · FEFO Expiry Risks
                   </span>
-                </button>
-              )}
+                  <span className="text-xs font-mono font-bold text-slate-700">
+                    {canonicalMedMetrics.expiringSoonCount} Expiring ≤90d · {canonicalMedMetrics.expiredBatchesItemCount} Expired Excluded
+                  </span>
+                </div>
+                <h2 className="text-base font-bold text-slate-900 mt-1">
+                  Near-Expiry Batches &amp; FEFO Dispensing Queue ({expiringSoonMeds.length})
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveModule('medicine')}
+                className="text-xs font-bold text-amber-900 hover:text-amber-950 flex items-center gap-1 cursor-pointer shrink-0"
+              >
+                <span>Open FEFO Ledger</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
             </div>
 
             <div className="divide-y divide-slate-100">
-              {(attentionMeds.length > 0 ? attentionMeds : medicines.slice(0, 4)).map(
-                (med) => {
-                  const evalRes = evaluateMedicineThresholdAndReplenishment(med);
-                  const isCrit = evalRes.riskLevel === 'CRITICAL';
-                  const suggestedOrderQty = evalRes.recommendedOrderQty;
+              {expiringSoonMeds.length === 0 ? (
+                <div className="p-4 text-xs text-slate-500">
+                  No usable batches expiring within the next 90 days.
+                </div>
+              ) : (
+                expiringSoonMeds.slice(0, 5).map((med) => {
+                  const refMs = Date.parse('2026-09-22T00:00:00Z');
+                  const earliestBatch =
+                    Array.isArray(med.batches) && med.batches.length > 0
+                      ? [...med.batches]
+                          .filter((b) => b.quantity > 0 && Date.parse(`${b.expiryDate}T00:00:00Z`) > refMs)
+                          .sort((a, b) => a.expiryDate.localeCompare(b.expiryDate))[0] || med.batches[0]
+                      : null;
+                  const batchNo = earliestBatch?.batchNumber || med.batchNumber;
+                  const expiryDate = earliestBatch?.expiryDate || med.expiryDate;
+                  const expMs = Date.parse(`${expiryDate}T00:00:00Z`);
+                  const daysRemaining = !Number.isNaN(expMs)
+                    ? Math.max(0, Math.ceil((expMs - refMs) / (1000 * 60 * 60 * 24)))
+                    : 60;
+                  const fefoPriority =
+                    med.fefoPriority || (daysRemaining <= 45 ? 'URGENT' : 'EXPIRING_SOON');
+
                   return (
                     <div
-                      key={med.id}
-                      className="p-4 hover:bg-slate-50 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                      key={`exp-${med.id}`}
+                      className="p-3.5 hover:bg-slate-50 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
                     >
-                      <div className="min-w-0 space-y-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <StatusBadge
-                            status={evalRes.riskLevel}
-                            text={
-                              isCrit
-                                ? 'Critical Low'
-                                : evalRes.riskLevel === 'WARNING'
-                                ? 'Low Stock'
-                                : 'Healthy'
-                            }
-                          />
-                          <span className="font-bold text-sm text-slate-900 truncate">
-                            {med.name}
-                          </span>
-                          {evalRes.pendingOrders > 0 && (
-                            <span className="px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-mono font-bold">
-                              +{evalRes.pendingOrders} In Pipeline
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 font-mono tabular-nums">
-                          <span>
-                            Usable:{' '}
-                            <strong className="text-slate-900">
-                              {evalRes.usableStock.toLocaleString()} {med.unit}
-                            </strong>
-                          </span>
-                          <span aria-hidden="true">·</span>
-                          <span>Min Buffer: {med.minStockLevel}</span>
-                          <span aria-hidden="true">·</span>
-                          <span>Daily Use: {med.dailyConsumption}/day</span>
-                          <span aria-hidden="true">·</span>
+                      <div className="space-y-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-bold text-slate-900 text-sm">{med.name}</span>
                           <span
-                            className={
-                              isCrit
-                                ? 'text-rose-700 font-bold'
-                                : 'text-amber-700 font-semibold'
-                            }
+                            className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
+                              fefoPriority === 'URGENT'
+                                ? 'bg-rose-100 text-rose-900 border-rose-300'
+                                : 'bg-amber-100 text-amber-900 border-amber-300'
+                            }`}
                           >
-                            Lasts {evalRes.usableDaysOfCover} days
+                            FEFO: {fefoPriority}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 font-mono text-slate-600">
+                          <span>
+                            Batch: <strong className="text-slate-900">{batchNo}</strong>
+                          </span>
+                          <span>·</span>
+                          <span>
+                            Expiry: <strong className="text-slate-900">{expiryDate}</strong>
+                          </span>
+                          <span>·</span>
+                          <span className={daysRemaining <= 45 ? 'text-rose-700 font-bold' : 'text-amber-800 font-bold'}>
+                            {daysRemaining} days remaining
                           </span>
                         </div>
                       </div>
 
-                      {/* Direct 1-Click Buttons */}
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleInstantDispense(
-                              med.id,
-                              med.name,
-                              med.unit,
-                              med.currentStock
-                            )
-                          }
-                          className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold flex items-center gap-1 transition-colors whitespace-nowrap cursor-pointer"
-                          title="Dispense 10 units to OPD"
-                        >
-                          <Minus className="w-3 h-3" />
-                          <span>Dispense 10</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleInstantOrder(med.name, suggestedOrderQty, isCrit)
-                          }
-                          className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold flex items-center gap-1 transition-colors whitespace-nowrap cursor-pointer"
-                        >
-                          <Plus className="w-3 h-3 text-emerald-400" />
-                          <span>Order +{suggestedOrderQty}</span>
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => openMedicineInInventory(med.id)}
+                        className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-800 font-semibold flex items-center gap-1 shrink-0 cursor-pointer"
+                      >
+                        <span>Inspect in Inventory</span>
+                        <ArrowRight className="w-3 h-3" />
+                      </button>
                     </div>
                   );
-                }
+                })
               )}
             </div>
           </div>
 
-          <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs">
-            <span className="text-slate-600">
-              Incoming deliveries in transit:{' '}
-              <strong className="font-mono text-slate-900">
-                {incomingDeliveries.length}
-              </strong>
-            </span>
-            <button
-              type="button"
-              onClick={() => setActiveModule('medicine')}
-              className="font-semibold text-emerald-700 hover:text-emerald-800 flex items-center gap-1 cursor-pointer"
-            >
-              <span>View Full Medicine Inventory ({medicines.length})</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
+          {/* SECTION 4: ACTIVE ALERTS */}
+          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-slate-200 flex items-center justify-between gap-2">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-slate-100 text-slate-800 border border-slate-300">
+                    Priority 4 · Active Alerts
+                  </span>
+                  <span className="text-xs font-mono font-bold text-rose-700">
+                    {canonicalAlertMetrics.criticalAlertsCount} Critical · {canonicalAlertMetrics.warningAlertsCount} Warning
+                  </span>
+                </div>
+                <h2 className="text-base font-bold text-slate-900 mt-1 flex items-center gap-1.5">
+                  <BellRing className="w-4 h-4 text-rose-600" />
+                  <span>Unresolved Facility &amp; Supply Alerts ({activeAlertsList.length})</span>
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveModule('alerts')}
+                className="text-xs font-bold text-slate-700 hover:text-slate-900 flex items-center gap-1 cursor-pointer shrink-0"
+              >
+                <span>Open Alert Centre</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div className="divide-y divide-slate-100">
+              {activeAlertsList.length === 0 ? (
+                <div className="p-4 text-xs text-slate-500">
+                  All system alerts are resolved.
+                </div>
+              ) : (
+                activeAlertsList.slice(0, 4).map((alertItem) => (
+                  <div
+                    key={alertItem.id}
+                    className="p-3.5 hover:bg-slate-50 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                  >
+                    <div className="space-y-1 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <StatusBadge
+                          status={alertItem.category === 'CRITICAL' ? 'CRITICAL' : 'WARNING'}
+                          text={alertItem.category}
+                        />
+                        <span className="font-bold text-slate-900">{alertItem.title}</span>
+                        <span className="text-[10px] font-mono text-slate-500">
+                          {alertItem.timestamp}
+                        </span>
+                      </div>
+                      <p className="text-slate-600 line-clamp-2">{alertItem.description}</p>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => acknowledgeAlert(alertItem.id)}
+                        className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer whitespace-nowrap"
+                      >
+                        {alertItem.status === 'ACTIVE' ? 'Acknowledge' : 'Resolve'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveModule('alerts')}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-semibold cursor-pointer whitespace-nowrap"
+                      >
+                        Details
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Right 5 Columns: Single Item Pharmacy Dispense + Nearby PHC Transfer */}
+        {/* Right 5 Columns: 2. PENDING MEDICAL OFFICER REVIEWS + 5. OFFLINE / SYNC STATUS + Quick Stock Dispense */}
         <div className="lg:col-span-5 space-y-6">
+          {/* SECTION 2: PENDING MEDICAL OFFICER REVIEWS */}
+          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-slate-200 flex items-center justify-between gap-2 bg-teal-50/50">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-teal-100 text-teal-900 border border-teal-300">
+                    Priority 2 · Human Approval Queue
+                  </span>
+                  <span className="text-xs font-mono font-bold text-teal-900">
+                    {pendingReviewRedistributions.length} Pending · {canonicalOrderMetrics.approvedTransfersCount} Approved · {canonicalOrderMetrics.rejectedTransfersCount} Rejected
+                  </span>
+                </div>
+                <h2 className="text-base font-bold text-slate-900 mt-1 flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-teal-700" />
+                  <span>Pending Medical Officer Reviews ({pendingReviewRedistributions.length})</span>
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveModule('orders')}
+                className="text-xs font-bold text-teal-800 hover:text-teal-950 flex items-center gap-1 cursor-pointer shrink-0"
+              >
+                <span>All Transfers</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div className="divide-y divide-slate-100">
+              {redistributions.map((rec) => {
+                const isPending = rec.status === 'PENDING_REVIEW' || rec.status === 'PROPOSED';
+                const isApproved =
+                  rec.status === 'APPROVED' ||
+                  rec.status === 'DISPATCHED' ||
+                  rec.status === 'IN_TRANSIT' ||
+                  rec.status === 'RECEIVED' ||
+                  rec.status === 'COMPLETED';
+                const isRejected = rec.status === 'REJECTED' || rec.status === 'CANCELLED';
+                const qty = rec.recommendedTransferQuantity || rec.transferQuantity || 0;
+                const sourceName = rec.sourcePHCName || rec.sourcePHC?.name || 'Donor PHC';
+                const destName = rec.destinationPHCName || rec.targetPHC?.name || 'Recipient PHC';
+
+                return (
+                  <div key={rec.id} className="p-4 space-y-2.5 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="font-bold text-slate-900 text-sm">{rec.medicineName}</div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-950 border border-emerald-300">
+                          {qty} Units
+                        </span>
+                        <span
+                          className={`font-mono font-bold text-[10px] px-2 py-0.5 rounded border ${
+                            isApproved
+                              ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                              : isRejected
+                              ? 'bg-rose-100 text-rose-900 border-rose-300'
+                              : 'bg-amber-100 text-amber-900 border-amber-300'
+                          }`}
+                        >
+                          {rec.status}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="font-mono text-[11px] text-slate-700 flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <span>
+                        Source: <strong className="text-slate-900">{sourceName}</strong>
+                      </span>
+                      <span>→</span>
+                      <span>
+                        Destination: <strong className="text-rose-800">{destName}</strong>
+                      </span>
+                      <span>·</span>
+                      <span className="text-slate-500">{rec.transitDistanceKm} km</span>
+                    </div>
+
+                    {isPending ? (
+                      <div className="pt-1 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => approveRedistribution(rec.id)}
+                          className="flex-1 py-2 px-3 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <ShieldCheck className="w-3.5 h-3.5 text-teal-400" />
+                          <span>Review Recommendation</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => approveRedistribution(rec.id, undefined, true)}
+                          className="py-2 px-3 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold transition-colors cursor-pointer"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            rejectRedistribution(
+                              rec.id,
+                              'Rejected by Medical Officer during clinical review'
+                            )
+                          }
+                          className="py-2 px-3 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-300 text-xs font-semibold transition-colors cursor-pointer"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="text-[11px] font-mono text-slate-600 flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-100">
+                        <span className={isApproved ? 'text-emerald-800 font-bold' : 'text-rose-800 font-bold'}>
+                          {isApproved ? '✓ Approved & Applied' : '✕ Rejected (No Transfer)'}
+                        </span>
+                        <span>
+                          {rec.reviewedBy || rec.approvedBy || rec.rejectedBy || 'Medical Officer'}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* SECTION 5: OFFLINE / SYNC STATUS */}
+          <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                {isOfflineMode ? (
+                  <WifiOff className="w-4 h-4 text-amber-600" />
+                ) : (
+                  <Wifi className="w-4 h-4 text-emerald-600" />
+                )}
+                <div>
+                  <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-slate-500 block">
+                    Priority 5 · Connectivity &amp; Offline Queue
+                  </span>
+                  <h2 className="text-sm font-bold text-slate-900">
+                    {isOfflineMode ? 'Offline Buffer Mode Active' : 'Online Real-Time Sync'} ·{' '}
+                    {queuedOrFailedOfflineItems.length} Queued
+                    {failedOfflineItems.length > 0 ? ` (${failedOfflineItems.length} Failed)` : ''}
+                  </h2>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={toggleOfflineMode}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold border cursor-pointer ${
+                    isOfflineMode
+                      ? 'bg-amber-100 text-amber-950 border-amber-300'
+                      : 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                  }`}
+                >
+                  {isOfflineMode ? 'Go Online' : 'Simulate Offline'}
+                </button>
+                {queuedOrFailedOfflineItems.length > 0 && !isOfflineMode && (
+                  <button
+                    type="button"
+                    onClick={() => void syncOfflineQueue()}
+                    disabled={isQueueSyncing}
+                    className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isQueueSyncing ? 'animate-spin' : ''}`} />
+                    <span>{isQueueSyncing ? 'Syncing...' : 'Sync Now'}</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {offlineQueue.length === 0 ? (
+              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200/80 flex items-center justify-between text-xs text-slate-600">
+                <span>0 queued or failed offline actions. All local ledger records are synchronized.</span>
+                <button
+                  type="button"
+                  onClick={addMockOfflineRecord}
+                  className="text-[11px] font-bold text-teal-700 hover:text-teal-900 underline cursor-pointer shrink-0 ml-2"
+                >
+                  + Test Queue Item
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {offlineQueue.slice(0, 3).map((qItem) => (
+                  <div
+                    key={qItem.id}
+                    className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-between gap-2 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-bold text-slate-900 truncate">
+                        {qItem.entityName} ({qItem.moduleLabel})
+                      </div>
+                      <div className="text-[10px] font-mono text-slate-500">
+                        {qItem.action} · {qItem.timestamp}
+                        {qItem.errorMessage ? ` · Error: ${qItem.errorMessage}` : ''}
+                      </div>
+                    </div>
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold shrink-0 ${
+                        qItem.status === 'SYNCED'
+                          ? 'bg-emerald-100 text-emerald-900'
+                          : qItem.status === 'FAILED_RETRY'
+                          ? 'bg-rose-100 text-rose-900'
+                          : 'bg-amber-100 text-amber-900'
+                      }`}
+                    >
+                      {qItem.status}
+                    </span>
+                  </div>
+                ))}
+                <div className="flex items-center justify-between text-[11px] pt-1">
+                  <span className="font-mono text-slate-500">
+                    Total queue records: {offlineQueue.length} ({queuedOrFailedOfflineItems.length} pending/failed)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setActiveModule('alerts')}
+                    className="font-bold text-teal-700 hover:text-teal-900 cursor-pointer"
+                  >
+                    Manage Offline Queue →
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Pharmacy Dispensing & Stock Deduction Card */}
           <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
@@ -732,54 +1239,6 @@ export const HomeOverview: React.FC = () => {
               </button>
             </form>
           </div>
-
-          {/* Nearby PHC Surplus Sharing Card */}
-          {redistributions.length > 0 && (
-            <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <ArrowRightLeft className="w-4 h-4 text-emerald-600" />
-                  <h2 className="text-sm font-bold text-slate-900">
-                    Fast Transfer from Nearby PHC
-                  </h2>
-                </div>
-                <span className="text-xs font-mono text-emerald-700 font-semibold">
-                  {redistributions[0].transitDistanceKm} km away
-                </span>
-              </div>
-
-              <p className="text-xs text-slate-600 leading-relaxed">
-                <strong>{redistributions[0].sourcePHCName || redistributions[0].sourcePHC?.name}</strong> has surplus{' '}
-                <strong>{redistributions[0].medicineName}</strong>. Request{' '}
-                <strong className="font-mono">
-                  {redistributions[0].recommendedTransferQuantity || redistributions[0].transferQuantity} units
-                </strong>{' '}
-                instead of waiting for the district warehouse.
-              </p>
-
-              <div className="pt-1 flex items-center justify-between gap-2">
-                {redistributions[0].status === 'APPROVED' || redistributions[0].status === 'IN_TRANSIT' || redistributions[0].status === 'COMPLETED' ? (
-                  <span className="text-xs font-semibold text-emerald-700 flex items-center gap-1.5">
-                    <CheckCircle2 className="w-4 h-4" />
-                    Transfer Approved &amp; Stock Updated ({redistributions[0].status})
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      approveRedistribution(redistributions[0].id);
-                    }}
-                    className="w-full py-2 px-3.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                  >
-                    <Truck className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>
-                      Approve Instant Transfer ({redistributions[0].recommendedTransferQuantity || redistributions[0].transferQuantity} Units)
-                    </span>
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
         </div>
       </div>
     </div>

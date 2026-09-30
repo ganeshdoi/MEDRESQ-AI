@@ -3,6 +3,8 @@ import type {
   MedicineItem,
   CapacityRecord,
   StaffMember,
+  StaffAttendanceRecord,
+  AttendanceStatus,
   WorkforceSummary,
   WeatherPreparedness,
   LogisticsOrder,
@@ -70,117 +72,422 @@ export const INITIAL_CAPACITY: CapacityRecord = {
 
 export const INITIAL_STAFF: StaffMember[] = [
   {
-    id: 'st-1',
+    id: 'STF-OSN-001',
+    staffCode: 'STF-OSN-001',
     phcId: 'phc-osian',
+    phcName: 'PHC Osian (24x7)',
     name: 'Dr. Suresh Chandra Bishnoi',
     role: 'Medical Officer',
+    designation: 'Medical Officer',
+    department: 'OPD Chamber 1 & Casualty',
     qualification: 'MBBS, DNB Family Medicine',
     assignedArea: 'OPD Chamber 1 & Casualty',
     shift: 'Morning',
     status: 'PRESENT',
     attendanceStatus: 'Present',
+    lastAttendanceUpdate: '08:30 IST',
+    lastMarkedBy: 'Dr. S.C. Bishnoi (OSN001)',
     patientLoadToday: 140,
     burnoutRisk: 'HIGH',
-    contact: '+91 98290 11422'
+    contact: 'Official PHC Extension',
+    isSyntheticDemo: true
   },
   {
-    id: 'st-2',
+    id: 'STF-OSN-002',
+    staffCode: 'STF-OSN-002',
     phcId: 'phc-osian',
+    phcName: 'PHC Osian (24x7)',
     name: 'Dr. Manisha Meena',
     role: 'Medical Officer',
+    designation: 'Medical Officer',
+    department: 'Maternal & Child Health Ward',
     qualification: 'MBBS',
     assignedArea: 'Maternal & Child Health Ward',
     shift: 'Evening',
     status: 'PRESENT',
     attendanceStatus: 'Present',
+    lastAttendanceUpdate: '08:35 IST',
+    lastMarkedBy: 'Dr. S.C. Bishnoi (OSN001)',
     patientLoadToday: 65,
     burnoutRisk: 'MODERATE',
-    contact: '+91 94140 22319'
+    contact: 'Official PHC Extension',
+    isSyntheticDemo: true
   },
   {
-    id: 'st-3',
+    id: 'STF-OSN-003',
+    staffCode: 'STF-OSN-003',
     phcId: 'phc-osian',
+    phcName: 'PHC Osian (24x7)',
     name: 'Kamla Devi Gurjar',
     role: 'Staff Nurse',
+    designation: 'Staff Nurse',
+    department: 'Emergency Observation Ward',
     qualification: 'GNM, B.Sc Nursing',
     assignedArea: 'Emergency Observation Ward',
     shift: 'Morning',
     status: 'PRESENT',
     attendanceStatus: 'Present',
+    lastAttendanceUpdate: '08:40 IST',
+    lastMarkedBy: 'Dr. S.C. Bishnoi (OSN001)',
     patientLoadToday: 32,
     burnoutRisk: 'HIGH',
-    contact: '+91 97840 88121'
+    contact: 'Official PHC Extension',
+    isSyntheticDemo: true
   },
   {
-    id: 'st-4',
+    id: 'STF-OSN-004',
+    staffCode: 'STF-OSN-004',
     phcId: 'phc-osian',
+    phcName: 'PHC Osian (24x7)',
     name: 'Sunita Bhati',
     role: 'Staff Nurse',
+    designation: 'Staff Nurse',
+    department: 'Inpatient General Ward',
     qualification: 'GNM',
     assignedArea: 'Inpatient General Ward',
     shift: 'Night',
     status: 'ON_LEAVE',
     attendanceStatus: 'On Leave',
+    lastAttendanceUpdate: '08:42 IST',
+    lastMarkedBy: 'Dr. S.C. Bishnoi (OSN001)',
     burnoutRisk: 'LOW',
-    contact: '+91 94600 34112'
+    contact: 'Official PHC Extension',
+    isSyntheticDemo: true
   },
   {
-    id: 'st-5',
+    id: 'STF-OSN-005',
+    staffCode: 'STF-OSN-005',
     phcId: 'phc-osian',
+    phcName: 'PHC Osian (24x7)',
     name: 'Rameshwar Lal Patel',
     role: 'Pharmacist',
+    designation: 'Pharmacist',
+    department: 'Main Pharmacy & Cold Storage',
     qualification: 'B.Pharm, Registered Pharmacist',
     assignedArea: 'Main Pharmacy & Cold Storage',
     shift: 'Morning',
     status: 'PRESENT',
     attendanceStatus: 'Present',
+    lastAttendanceUpdate: '08:45 IST',
+    lastMarkedBy: 'Dr. S.C. Bishnoi (OSN001)',
     patientLoadToday: 210,
     burnoutRisk: 'HIGH',
-    contact: '+91 98292 90123'
+    contact: 'Official PHC Extension',
+    isSyntheticDemo: true
   },
   {
-    id: 'st-6',
+    id: 'STF-OSN-006',
+    staffCode: 'STF-OSN-006',
     phcId: 'phc-osian',
+    phcName: 'PHC Osian (24x7)',
     name: 'Geeta Kumari',
-    role: 'ANM / Health Worker',
+    role: 'ANM',
+    designation: 'ANM',
+    department: 'Sub-Centre Bhed & Village Outreach',
     qualification: 'MPHW(F) / ANM',
     assignedArea: 'Sub-Centre Bhed & Village Outreach',
     shift: 'Morning',
-    status: 'FIELD_DUTY',
+    status: 'PRESENT',
     attendanceStatus: 'Present',
+    lastAttendanceUpdate: '08:48 IST',
+    lastMarkedBy: 'Dr. S.C. Bishnoi (OSN001)',
     patientLoadToday: 45,
     burnoutRisk: 'MODERATE',
-    contact: '+91 97720 19344'
+    contact: 'Official PHC Extension',
+    isSyntheticDemo: true
   },
   {
-    id: 'st-7',
+    id: 'STF-OSN-007',
+    staffCode: 'STF-OSN-007',
     phcId: 'phc-osian',
+    phcName: 'PHC Osian (24x7)',
     name: 'Dinesh Kumar Sen',
     role: 'Lab Technician',
+    designation: 'Lab Technician',
+    department: 'Clinical Diagnostics Lab',
     qualification: 'DMLT, B.Sc MLT',
     assignedArea: 'Clinical Diagnostics Lab',
     shift: 'Morning',
     status: 'PRESENT',
     attendanceStatus: 'Present',
+    lastAttendanceUpdate: '08:50 IST',
+    lastMarkedBy: 'Dr. S.C. Bishnoi (OSN001)',
     patientLoadToday: 78,
     burnoutRisk: 'MODERATE',
-    contact: '+91 98294 66100'
+    contact: 'Official PHC Extension',
+    isSyntheticDemo: true
   },
   {
-    id: 'st-8',
+    id: 'STF-OSN-008',
+    staffCode: 'STF-OSN-008',
     phcId: 'phc-osian',
+    phcName: 'PHC Osian (24x7)',
     name: 'Pooja Verma',
     role: 'Staff Nurse',
+    designation: 'Staff Nurse',
+    department: 'Labor & Delivery Room',
     qualification: 'GNM',
     assignedArea: 'Labor & Delivery Room',
     shift: 'Morning',
     status: 'PRESENT',
     attendanceStatus: 'Present',
+    lastAttendanceUpdate: '08:52 IST',
+    lastMarkedBy: 'Dr. S.C. Bishnoi (OSN001)',
     patientLoadToday: 18,
     burnoutRisk: 'MODERATE',
-    contact: '+91 94142 88200'
+    contact: 'Official PHC Extension',
+    isSyntheticDemo: true
+  },
+  {
+    id: 'STF-OSN-009',
+    staffCode: 'STF-OSN-009',
+    phcId: 'phc-osian',
+    phcName: 'PHC Osian (24x7)',
+    name: 'Vikram Singh Rathore',
+    role: 'CHO',
+    designation: 'CHO',
+    department: 'Ayushman Arogya Mandir Telemedicine',
+    qualification: 'B.Sc Nursing, CCH',
+    assignedArea: 'NCD Screening & Tele-Consultation',
+    shift: 'Morning',
+    status: 'PRESENT',
+    attendanceStatus: 'Present',
+    lastAttendanceUpdate: '08:55 IST',
+    lastMarkedBy: 'Dr. S.C. Bishnoi (OSN001)',
+    patientLoadToday: 38,
+    burnoutRisk: 'LOW',
+    contact: 'Official PHC Extension',
+    isSyntheticDemo: true
+  },
+  {
+    id: 'STF-OSN-010',
+    staffCode: 'STF-OSN-010',
+    phcId: 'phc-osian',
+    phcName: 'PHC Osian (24x7)',
+    name: 'Mahendra Gehlot',
+    role: 'Data Entry Operator',
+    designation: 'Data Entry Operator',
+    department: 'e-Aushadhi & HMIS Registration Desk',
+    qualification: 'BCA, RSCIT',
+    assignedArea: 'OPD Registration & Digital Ledger',
+    shift: 'Morning',
+    status: 'ABSENT',
+    attendanceStatus: 'Absent',
+    lastAttendanceUpdate: '09:00 IST',
+    lastMarkedBy: 'Dr. S.C. Bishnoi (OSN001)',
+    burnoutRisk: 'LOW',
+    contact: 'Official PHC Extension',
+    isSyntheticDemo: true
+  },
+  {
+    id: 'STF-OSN-011',
+    staffCode: 'STF-OSN-011',
+    phcId: 'phc-osian',
+    phcName: 'PHC Osian (24x7)',
+    name: 'Bhawani Shankar',
+    role: 'Other',
+    designation: 'Other',
+    department: 'Cold-Chain & Biomedical Support',
+    qualification: 'Cold-Chain Handler Certificate',
+    assignedArea: 'ILR Vaccine Store & Facility Support',
+    shift: 'Morning',
+    status: 'NOT_MARKED',
+    attendanceStatus: 'Not Marked',
+    burnoutRisk: 'LOW',
+    contact: 'Official PHC Extension',
+    isSyntheticDemo: true
   }
 ];
+
+/**
+ * Generates or returns the synthetic/demo staff directory strictly scoped to the specified PHC.
+ * Reuses INITIAL_STAFF for phc-osian and generates deterministic PHC-specific cadres for any other PHC.
+ */
+export function getFacilityStaffDirectory(phc: PHCFacility): StaffMember[] {
+  if (!phc || phc.id === 'phc-osian') {
+    return INITIAL_STAFF.map((s) => ({ ...s }));
+  }
+
+  const cleanCode = (phc.code || phc.id.replace(/^phc-/, '')).replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 5) || 'PHC';
+  const officerName = phc.medicalOfficerInCharge || 'Dr. Medical Officer I/C';
+
+  const templates: Array<{
+    idx: string;
+    name: string;
+    designation: StaffMember['role'];
+    department: string;
+    qualification: string;
+    shift: StaffMember['shift'];
+    defaultStatus: AttendanceStatus;
+  }> = [
+    {
+      idx: '001',
+      name: officerName,
+      designation: 'Medical Officer',
+      department: 'OPD Chamber 1 & Emergency Triage',
+      qualification: 'MBBS',
+      shift: 'Morning',
+      defaultStatus: 'PRESENT'
+    },
+    {
+      idx: '002',
+      name: `Kavita Sharma (${phc.block})`,
+      designation: 'Staff Nurse',
+      department: 'Maternal & Child Health Ward',
+      qualification: 'GNM, B.Sc Nursing',
+      shift: 'Morning',
+      defaultStatus: 'PRESENT'
+    },
+    {
+      idx: '003',
+      name: `Rajendra Prasad (${phc.block})`,
+      designation: 'Pharmacist',
+      department: 'Main Pharmacy & e-Aushadhi Store',
+      qualification: 'B.Pharm',
+      shift: 'Morning',
+      defaultStatus: 'PRESENT'
+    },
+    {
+      idx: '004',
+      name: `Savitri Devi (${phc.block})`,
+      designation: 'ANM',
+      department: 'Sub-Centre Immunization & Outreach',
+      qualification: 'MPHW(F) / ANM',
+      shift: 'Morning',
+      defaultStatus: 'PRESENT'
+    },
+    {
+      idx: '005',
+      name: `mukesh Kumar (${phc.block})`.replace(/^m/, 'M'),
+      designation: 'Lab Technician',
+      department: 'Clinical Diagnostics Laboratory',
+      qualification: 'DMLT',
+      shift: 'Morning',
+      defaultStatus: 'PRESENT'
+    },
+    {
+      idx: '006',
+      name: `Anita Choudhary (${phc.block})`,
+      designation: 'CHO',
+      department: 'NCD Screening & Telemedicine Hub',
+      qualification: 'B.Sc Nursing, CCH',
+      shift: 'Morning',
+      defaultStatus: 'ON_LEAVE'
+    },
+    {
+      idx: '007',
+      name: `Deepak Verma (${phc.block})`,
+      designation: 'Data Entry Operator',
+      department: 'OPD Registration & HMIS Desk',
+      qualification: 'BCA',
+      shift: 'Morning',
+      defaultStatus: 'ABSENT'
+    },
+    {
+      idx: '008',
+      name: `Harishankar (${phc.block})`,
+      designation: 'Other',
+      department: 'Cold-Chain & Ward Support',
+      qualification: 'Facility Support',
+      shift: 'Evening',
+      defaultStatus: 'NOT_MARKED'
+    }
+  ];
+
+  return templates.map((t) => {
+    const staffId = `STF-${cleanCode}-${t.idx}`;
+    return {
+      id: staffId,
+      staffCode: staffId,
+      phcId: phc.id,
+      phcName: phc.name,
+      name: t.name,
+      role: t.designation,
+      designation: t.designation,
+      department: t.department,
+      qualification: t.qualification,
+      assignedArea: t.department,
+      shift: t.shift,
+      status: t.defaultStatus,
+      attendanceStatus:
+        t.defaultStatus === 'PRESENT'
+          ? 'Present'
+          : t.defaultStatus === 'ABSENT'
+          ? 'Absent'
+          : t.defaultStatus === 'ON_LEAVE'
+          ? 'On Leave'
+          : 'Not Marked',
+      lastAttendanceUpdate: t.defaultStatus === 'NOT_MARKED' ? undefined : '08:45 IST',
+      lastMarkedBy: t.defaultStatus === 'NOT_MARKED' ? undefined : officerName,
+      burnoutRisk: 'MODERATE',
+      contact: 'Official PHC Extension',
+      isSyntheticDemo: true
+    };
+  });
+}
+
+export function getInitialAttendanceRecordsForPHC(
+  phc: PHCFacility,
+  todayStr: string
+): StaffAttendanceRecord[] {
+  const roster = getFacilityStaffDirectory(phc);
+  const officerLabel = phc.medicalOfficerInCharge || 'Dr. S.C. Bishnoi';
+  const records: StaffAttendanceRecord[] = [];
+
+  roster.forEach((member, idx) => {
+    const statusToday: AttendanceStatus =
+      member.status === 'PRESENT' || member.status === 'FIELD_DUTY'
+        ? 'PRESENT'
+        : member.status === 'ABSENT'
+        ? 'ABSENT'
+        : member.status === 'ON_LEAVE'
+        ? 'ON_LEAVE'
+        : 'NOT_MARKED';
+
+    if (statusToday !== 'NOT_MARKED') {
+      records.push({
+        attendanceId: `ATT-${phc.id}-${todayStr}-${member.id}`,
+        staffId: member.id,
+        staffName: member.name,
+        designation: member.designation || member.role,
+        department: member.department || member.assignedArea,
+        phcId: phc.id,
+        phcName: phc.name,
+        date: todayStr,
+        status: statusToday,
+        markedBy: member.lastMarkedBy || officerLabel,
+        markedAt: `08:${String(30 + idx * 2).padStart(2, '0')} IST`,
+        syncStatus: 'SYNCED'
+      });
+    }
+  });
+
+  // Also seed 1 previous day so date filtering & history table have immediate realistic synthetic records
+  const prevDateObj = new Date(`${todayStr}T00:00:00`);
+  if (!Number.isNaN(prevDateObj.getTime())) {
+    prevDateObj.setDate(prevDateObj.getDate() - 1);
+    const yesterdayStr = prevDateObj.toISOString().split('T')[0];
+    roster.slice(0, 6).forEach((member, idx) => {
+      const prevStatus: AttendanceStatus = idx === 4 ? 'ON_LEAVE' : idx === 5 ? 'ABSENT' : 'PRESENT';
+      records.push({
+        attendanceId: `ATT-${phc.id}-${yesterdayStr}-${member.id}`,
+        staffId: member.id,
+        staffName: member.name,
+        designation: member.designation || member.role,
+        department: member.department || member.assignedArea,
+        phcId: phc.id,
+        phcName: phc.name,
+        date: yesterdayStr,
+        status: prevStatus,
+        markedBy: officerLabel,
+        markedAt: `08:${String(25 + idx * 3).padStart(2, '0')} IST`,
+        syncStatus: 'SYNCED'
+      });
+    });
+  }
+
+  return records;
+}
 
 export const INITIAL_WORKFORCE_SUMMARY: WorkforceSummary = {
   phcId: 'phc-osian',

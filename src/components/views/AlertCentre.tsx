@@ -24,6 +24,10 @@ import { WhyThisAlertModal, AlertMathBreakdown } from '../ui/WhyThisAlertModal.t
 import { OfflineQueueViewer } from './OfflineQueueViewer.tsx';
 import { evaluateMedicineThresholdAndReplenishment } from '../../utils/inventoryForecast.ts';
 import { matchesSearchKeywords } from '../../utils/globalSearch.ts';
+import {
+  getCanonicalAlertMetrics,
+  getCanonicalMedicineInventoryMetrics
+} from '../../utils/datasetMetrics.ts';
 
 export const AlertCentre: React.FC = () => {
   const {
@@ -70,13 +74,22 @@ export const AlertCentre: React.FC = () => {
 
   const pendingOfflineCount = offlineQueue.filter((i) => i.status !== 'SYNCED').length;
 
+  const canonicalMedMetrics = useMemo(
+    () => getCanonicalMedicineInventoryMetrics(medicines),
+    [medicines]
+  );
+  const canonicalAlertMetrics = useMemo(
+    () => getCanonicalAlertMetrics(alerts, proactiveStockAlerts),
+    [alerts, proactiveStockAlerts]
+  );
+
   const medicineEvaluations = useMemo(() => {
     const map = new Map<string, ReturnType<typeof evaluateMedicineThresholdAndReplenishment>>();
     for (const m of medicines) {
-      map.set(m.id, evaluateMedicineThresholdAndReplenishment(m));
+      map.set(m.id, canonicalMedMetrics.evaluationsByMedId[m.id] || evaluateMedicineThresholdAndReplenishment(m));
     }
     return map;
-  }, [medicines]);
+  }, [medicines, canonicalMedMetrics.evaluationsByMedId]);
 
   const unOrderedBreachedMeds = useMemo(() => {
     return medicines.filter((m) => {
@@ -208,29 +221,38 @@ export const AlertCentre: React.FC = () => {
     }
   };
 
-  const handleAction = (alert: any) => {
-    if (!alert || !alert.id) return;
+  const getAlertDirectAction = (alert: any): { module: string; label: string } => {
+    if (!alert || !alert.id) return { module: 'medicine', label: 'Open Inventory' };
+    const text = `${alert.id} ${alert.title || ''} ${alert.description || ''}`.toUpperCase();
+    if (text.includes('SURGE') || text.includes('FORECAST') || text.includes('STAFF') || text.includes('HEAT') || text.includes('DENGUE') || text.includes('MALARIA')) {
+      return { module: 'preparedness', label: 'Open Forecast' };
+    }
+    if (text.includes('TRANSFER') || text.includes('ORDER') || text.includes('INDENT') || text.includes('REDISTRIBUTION') || text.includes('REVIEW')) {
+      return { module: 'orders', label: 'Open Orders / Review' };
+    }
     if (
       alert.category === 'CRITICAL' ||
-      alert.id.includes('MED') ||
-      alert.id.includes('THRESH') ||
-      alert.id.includes('COLD')
+      alert.medicineId ||
+      text.includes('MED') ||
+      text.includes('THRESH') ||
+      text.includes('STOCK') ||
+      text.includes('EXPIR') ||
+      text.includes('COLD')
     ) {
-      setActiveModule('medicine');
-    } else if (alert.id.includes('STAFF') || alert.id.includes('SURGE') || alert.id.includes('HEAT')) {
-      setActiveModule('preparedness');
-    } else {
-      setActiveModule('orders');
+      return { module: 'medicine', label: 'Open Inventory' };
     }
+    return { module: 'orders', label: 'Open Orders / Review' };
   };
 
-  const criticalCount = validAlerts.filter(
-    (a) => a.category === 'CRITICAL' && a.status !== 'RESOLVED'
-  ).length;
-  const warningCount = validAlerts.filter(
-    (a) => a.category === 'WARNING' && a.status !== 'RESOLVED'
-  ).length;
-  const resolvedCount = validAlerts.filter((a) => a.status === 'RESOLVED').length;
+  const handleAction = (alert: any) => {
+    const target = getAlertDirectAction(alert);
+    setActiveModule(target.module);
+  };
+
+  const criticalCount = canonicalAlertMetrics.criticalSystemAlertsCount;
+  const warningCount = canonicalAlertMetrics.warningSystemAlertsCount;
+  const resolvedCount = canonicalAlertMetrics.resolvedSystemAlertsCount;
+  const activeSystemAlertsCount = canonicalAlertMetrics.activeSystemAlertsCount;
 
   return (
     <div className="space-y-6">
@@ -322,7 +344,7 @@ export const AlertCentre: React.FC = () => {
           }`}
         >
           <BellRing className="w-4 h-4 text-rose-600" />
-          <span>Active Threshold & Operational Alerts ({alerts.length})</span>
+          <span>System Operational Alerts ({activeSystemAlertsCount} Active · {validAlerts.length} Total)</span>
         </button>
 
         <button
@@ -335,7 +357,7 @@ export const AlertCentre: React.FC = () => {
           }`}
         >
           <Sliders className="w-4 h-4 text-emerald-600" />
-          <span>Configure Stock Threshold Rules ({medicines.length} Medicines)</span>
+          <span>Stock Threshold Rules ({canonicalMedMetrics.totalTrackedItems} Items · {canonicalMedMetrics.lowStockCount} Breached)</span>
         </button>
 
         <button
@@ -390,7 +412,7 @@ export const AlertCentre: React.FC = () => {
                   onChange={(e) => setOnlyBreachedFilter(e.target.checked)}
                   className="rounded border-slate-300 text-rose-600 focus:ring-rose-500"
                 />
-                <span>Only Breached ({proactiveStockAlerts.length})</span>
+                <span>Only Breached ({canonicalMedMetrics.lowStockCount}: {canonicalMedMetrics.criticalCount} Crit + {canonicalMedMetrics.warningCount} Warn)</span>
               </label>
             </div>
           </div>
@@ -729,13 +751,26 @@ export const AlertCentre: React.FC = () => {
                   alert.id.startsWith('ALT-THRESH-') &&
                   alert.currentStock !== undefined &&
                   alert.thresholdLevel !== undefined;
+                const matchedMed = medicines.find(
+                  (m) =>
+                    m.id === alert.medicineId ||
+                    alert.title?.toLowerCase().includes(m.name.toLowerCase()) ||
+                    alert.description?.toLowerCase().includes(m.name.toLowerCase())
+                );
+                const directAction = getAlertDirectAction(alert);
+                const statusLabel =
+                  alert.status === 'RESOLVED'
+                    ? 'Resolved'
+                    : alert.status === 'ACKNOWLEDGED'
+                    ? 'Acknowledged'
+                    : 'Active';
 
                 return (
                   <div
                     key={alert.id}
                     className={`p-4 sm:p-5 rounded-xl border transition-all flex flex-col md:flex-row md:items-center justify-between gap-4 ${
                       alert.status === 'RESOLVED'
-                        ? 'bg-slate-50/90 border-slate-200 opacity-70'
+                        ? 'bg-slate-50/90 border-slate-200 opacity-75'
                         : alert.category === 'CRITICAL'
                         ? 'bg-rose-50/80 border-rose-300 shadow-xs'
                         : alert.category === 'WARNING'
@@ -755,20 +790,41 @@ export const AlertCentre: React.FC = () => {
                               alert.category === 'INFO' ? 'PREPAREDNESS' : (alert.category as any)
                             }
                           />
+                          <span
+                            className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
+                              alert.status === 'RESOLVED'
+                                ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                                : alert.status === 'ACKNOWLEDGED'
+                                ? 'bg-blue-100 text-blue-900 border-blue-300'
+                                : 'bg-rose-100 text-rose-900 border-rose-300'
+                            }`}
+                          >
+                            Status: {statusLabel}
+                          </span>
                           <span className="text-[10px] font-mono text-slate-500 font-semibold">
                             {alert.timestamp}
                           </span>
                         </div>
+
                         <p className="text-xs text-slate-700 leading-relaxed font-medium max-w-3xl">
-                          {alert.description}
+                          <strong className="text-slate-900">Reason:</strong> {alert.description}
                         </p>
-                        <div className="text-[11px] text-slate-500 font-mono flex flex-wrap items-center gap-2 pt-0.5">
+
+                        <div className="text-[11px] text-slate-600 font-mono flex flex-wrap items-center gap-2 pt-0.5">
                           <span>
-                            Facility: <strong>{alert.facilityName || alert.phcName}</strong>
+                            Affected PHC: <strong className="text-slate-900">{alert.facilityName || alert.phcName || selectedPHC.name}</strong>
                           </span>
+                          {matchedMed && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span>
+                                Affected Medicine: <strong className="text-slate-900">{matchedMed.name}</strong> ({matchedMed.id})
+                              </span>
+                            </>
+                          )}
                           <span aria-hidden="true">·</span>
                           <span>
-                            Status: <strong className="uppercase">{alert.status}</strong>
+                            Severity: <strong className="uppercase text-slate-900">{alert.category}</strong>
                           </span>
                           {isThresholdAlert && (
                             <>
@@ -796,7 +852,7 @@ export const AlertCentre: React.FC = () => {
                       </button>
 
                       {isThresholdAlert && alert.status !== 'RESOLVED' && (() => {
-                        const matched = medicines.find((m) => m.id === alert.medicineId);
+                        const matched = medicines.find((m) => m.id === alert.medicineId) || matchedMed;
                         const ev = matched ? medicineEvaluations.get(matched.id) : undefined;
                         const orderQty = ev
                           ? ev.recommendedOrderQty
@@ -869,7 +925,7 @@ export const AlertCentre: React.FC = () => {
                           onClick={() => handleAction(alert)}
                           className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors shadow-2xs cursor-pointer"
                         >
-                          <span>Open Stock</span>
+                          <span>{directAction.label}</span>
                           <ArrowRight className="w-3.5 h-3.5" />
                         </button>
                       )}

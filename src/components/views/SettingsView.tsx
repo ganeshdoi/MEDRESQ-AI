@@ -14,13 +14,13 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext.tsx';
 import { Role } from '../../types.ts';
+import { SUPPORTED_LANGUAGES, type SupportedLanguageCode } from '../../i18n/index.ts';
 
 export const SettingsView: React.FC = () => {
-  const { selectedPHC, role, setRole, isOfflineMode, toggleOfflineMode, showNotification } = useApp();
+  const { selectedPHC, role, setRole, isOfflineMode, toggleOfflineMode, showNotification, language, setLanguage } = useApp();
   const [stockoutThreshold, setStockoutThreshold] = useState(7);
   const [occupancyThreshold, setOccupancyThreshold] = useState(80);
   const [feverThreshold, setFeverThreshold] = useState(30);
-  const [preferredLang, setPreferredLang] = useState('hinglish');
   const [savedSuccess, setSavedSuccess] = useState(false);
 
   const handleSave = (e: React.FormEvent) => {
@@ -291,13 +291,15 @@ export const SettingsView: React.FC = () => {
             </div>
             <div className="pt-3 border-t border-slate-100">
               <select
-                value={preferredLang}
-                onChange={(e) => setPreferredLang(e.target.value)}
+                value={language}
+                onChange={(e) => setLanguage(e.target.value as SupportedLanguageCode)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-semibold text-slate-900 bg-white focus:outline-none focus:ring-2 focus:ring-purple-500 shadow-2xs cursor-pointer"
               >
-                <option value="hinglish">Hinglish / Rajasthani Dialect (Colloquial Standard)</option>
-                <option value="hindi">Hindi (मानक हिन्दी - स्वास्थ्य शब्दावली)</option>
-                <option value="english">English (National Health Standard)</option>
+                {SUPPORTED_LANGUAGES.map((lang) => (
+                  <option key={lang.code} value={lang.code}>
+                    {lang.name} ({lang.nativeLabel})
+                  </option>
+                ))}
               </select>
             </div>
           </div>

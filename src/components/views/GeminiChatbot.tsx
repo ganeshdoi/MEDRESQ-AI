@@ -40,7 +40,7 @@ const PERSONAS: PersonaOption[] = [
     title: 'Clinical Supply Chain & Reallocation Engine',
     badge: 'Clinical Engine',
     complexity: 'general',
-    model: 'gemini-3.8-flash',
+    model: 'gemini-3-flash-preview',
     icon: Sparkles,
     accentColor: 'text-indigo-700 bg-indigo-50 border-indigo-200',
     description: 'Calculates stock depletion, 30-50% seasonal surge adjustment, safe/warning/critical rating, and smart lateral reallocation in structured JSON.',
@@ -56,7 +56,7 @@ const PERSONAS: PersonaOption[] = [
     title: 'PHC Medical Operations',
     badge: 'General Tasks',
     complexity: 'general',
-    model: 'gemini-3.8-flash',
+    model: 'gemini-3-flash-preview',
     icon: Bot,
     accentColor: 'text-emerald-700 bg-emerald-50 border-emerald-200',
     description: 'Specialized in drug inventory, FEFO batch rotation, stockout triage, and PHC operational guidance.',
@@ -88,7 +88,7 @@ const PERSONAS: PersonaOption[] = [
     title: 'Instant Action Checklist',
     badge: 'Ultra Fast',
     complexity: 'fast',
-    model: 'gemini-3.1-flash-lite',
+    model: 'gemini-3.1-flash-lite-preview',
     icon: Zap,
     accentColor: 'text-amber-700 bg-amber-50 border-amber-200',
     description: 'Low-latency immediate action checklists, urgent inter-facility ambulance transfer, and fast restock protocols.',
@@ -241,7 +241,7 @@ export const GeminiChatbot: React.FC = () => {
         <div className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">
           Select AI Operational Persona & Routing Model
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
           {PERSONAS.map(p => {
             const Icon = p.icon;
             const isSelected = p.id === selectedPersonaId;

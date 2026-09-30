@@ -6,6 +6,7 @@ import {
   RedistributionOpportunity
 } from '../types.ts';
 import { NATIONAL_ESSENTIAL_MEDICINES_LIST } from '../data/nationalEssentialMedicines.ts';
+import { getDatasetFacilityMetrics } from './datasetMetrics.ts';
 
 const KEYWORD_SYNONYMS: Record<string, string[]> = {
   ors: ['oral rehydration salts', 'rehydration', 'sachet', 'sachets', 'dehydration', 'diarrhea'],
@@ -106,6 +107,8 @@ export interface GlobalSearchResultItem {
   score: number;
 }
 
+const DEFAULT_FACILITY_METRICS = getDatasetFacilityMetrics();
+
 const PORTAL_MODULES: Array<{
   id: string;
   title: string;
@@ -121,7 +124,7 @@ const PORTAL_MODULES: Array<{
   {
     id: 'medicine',
     title: 'Medicine Inventory & FEFO Batch Ledger',
-    subtitle: '51 NLEM drugs, FEFO batch expiry, 30-day consumption forecast & EOQ',
+    subtitle: `${DEFAULT_FACILITY_METRICS.nlemCatalogueCount} NLEM reference drugs, FEFO batch expiry, 30-day consumption forecast & EOQ`,
     keywords: 'medicine inventory fefo batch expiry stock ledger dispense reorder eoq forecast'
   },
   {
@@ -139,13 +142,13 @@ const PORTAL_MODULES: Array<{
   {
     id: 'map',
     title: 'Network Stock Map & GIS Routing',
-    subtitle: '53 mapped PHCs, 30km cluster radius, TSP supply circuit & transfer ETAs',
+    subtitle: `${DEFAULT_FACILITY_METRICS.networkMapTotalCount} network nodes (${DEFAULT_FACILITY_METRICS.samplePhcTotalCount} mapped PHCs), 30km cluster radius & TSP routing`,
     keywords: 'map network gis routing distance matrix nearby surplus cluster circuit google maps'
   },
   {
     id: 'directory',
     title: 'PHC Directory & NLEM 2022 Formulary Catalogue',
-    subtitle: 'Browse Rajasthan & All-India PHCs and 51 NLEM essential medicines',
+    subtitle: `Browse ${DEFAULT_FACILITY_METRICS.samplePhcTotalCount} sample PHCs (${DEFAULT_FACILITY_METRICS.rajasthanPhcCount} Rajasthan) and ${DEFAULT_FACILITY_METRICS.nlemCatalogueCount} NLEM essential medicines`,
     keywords: 'directory catalogue phc facility rajasthan india nlem formulary cold chain who'
   },
   {

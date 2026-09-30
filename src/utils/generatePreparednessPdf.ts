@@ -5,6 +5,7 @@ import { PHCFacility } from '../types.ts';
 
 export interface PreparednessPdfData {
   phc: PHCFacility;
+  medicalOfficerName?: string;
   scenarioName: string;
   temperature: number;
   humidity: number;
@@ -126,11 +127,12 @@ export async function generatePreparednessPdf(data: PreparednessPdfData): Promis
   doc.setFontSize(13);
   doc.text('30-Day Predictive Resource Consumption & Risk Alert Summary', margin + 3, curY + 11);
 
+  const activeOfficer = data.medicalOfficerName || data.phc.medicalOfficerInCharge;
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.5);
   doc.setTextColor(71, 85, 105);
   doc.text(
-    `Facility: ${data.phc.name} (${data.phc.block}, ${data.phc.district})  |  Mandore Regional Warehouse Route  |  Preparedness Index: ${data.facilityPreparednessIndex}/100`,
+    `Facility: ${data.phc.name} (${data.phc.block}, ${data.phc.district})  |  MOIC: ${activeOfficer}  |  Preparedness Index: ${data.facilityPreparednessIndex}/100`,
     margin + 3,
     curY + 17
   );
@@ -517,6 +519,10 @@ export async function generatePreparednessPdf(data: PreparednessPdfData): Promis
 
   // Alert Card 1: Critical ORS Alert
   const alert1Height = 22;
+  const sortedRiskSupplies = [...data.supplies].sort((a, b) => a.daysOfSafeStock - b.daysOfSafeStock);
+  const topRisk1 = sortedRiskSupplies[0] || activeSupply;
+  const topRisk2 = sortedRiskSupplies[1] || sortedRiskSupplies[0] || activeSupply;
+
   doc.setFillColor(254, 242, 242);
   doc.setDrawColor(248, 113, 113);
   doc.roundedRect(margin, curY, contentWidth, alert1Height, 1.5, 1.5, 'FD');
@@ -525,7 +531,7 @@ export async function generatePreparednessPdf(data: PreparednessPdfData): Promis
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8);
   doc.text(
-    'ALERT #1: CRITICAL ORS BUFFER EXHAUSTION BEFORE WAREHOUSE TRANSIT (Risk Score: 94/100)',
+    `ALERT #1: ${topRisk1.name.toUpperCase()} (${topRisk1.urgency}) — ${topRisk1.daysOfSafeStock}d COVER VS ${data.leadTimeDays}d LEAD TIME`,
     margin + 3,
     curY + 4.5
   );
@@ -534,31 +540,35 @@ export async function generatePreparednessPdf(data: PreparednessPdfData): Promis
   doc.setFontSize(7);
   doc.setTextColor(51, 65, 85);
   doc.text(
-    '• Observed Signal: Ambient temperature of 44.8°C with 18% humidity triggered acute heat-exhaustion presentations across the OPD (surged to 310 OPD patients/day).',
+    `• Observed Signal: Ambient temperature of ${data.temperature}°C with ${data.humidity}% humidity (${data.scenarioName}) across ${data.footfall} OPD patients/day.`,
     margin + 3,
     curY + 8.5
   );
   doc.text(
-    '• Syndromic Correlation: Clinical presentations reflect severe dehydration and hyperthermia rather than enteric infections. ORS demand surge elasticity reaches 2.3× baseline.',
+    `• Stock & Burn Rate: Usable stock is ${topRisk1.currentStock.toLocaleString()} ${topRisk1.unit} against projected burn of ${topRisk1.projectedDailyBurn.toLocaleString()} ${topRisk1.unit}/day (${topRisk1.daysOfSafeStock} days cover).`,
     margin + 3,
     curY + 12
   );
   doc.text(
-    '• Administrative Directive: Immediately expedite pending order #ORD-2026-904 (+500 pkts) and execute lateral transfer of 600 sachets from PHC Mandore via green corridor.',
+    `• Administrative Directive: ${
+      topRisk1.recommendedReorder > 0
+        ? `Expedite replenishment indent of +${topRisk1.recommendedReorder.toLocaleString()} ${topRisk1.unit} or initiate lateral PHC transfer.`
+        : `Maintain FEFO monitoring; current stock covers ${topRisk1.daysOfSafeStock} days.`
+    }`,
     margin + 3,
     curY + 15.5
   );
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(190, 18, 60);
   doc.text(
-    'STATUS: Actionable Indent Required • RMSCL Mandore Route Transit Window: 3.5 Days.',
+    `STATUS: ${topRisk1.urgency} • Warehouse Transit Window: ${data.leadTimeDays} Days • MOIC: ${activeOfficer}`,
     margin + 3,
     curY + 19
   );
 
   curY += alert1Height + 4;
 
-  // Alert Card 2: Intravenous Fluids
+  // Alert Card 2: Secondary Priority Resource
   const alert2Height = 20;
   doc.setFillColor(255, 251, 235);
   doc.setDrawColor(251, 191, 36);
@@ -568,7 +578,7 @@ export async function generatePreparednessPdf(data: PreparednessPdfData): Promis
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8);
   doc.text(
-    'ALERT #2: HIGH ALERT - INTRAVENOUS FLUID CONTINGENCY BUFFER DEPLETION (Risk Score: 86/100)',
+    `ALERT #2: SECONDARY PRIORITY — ${topRisk2.name.toUpperCase()} (${topRisk2.daysOfSafeStock} DAYS REMAINING)`,
     margin + 3,
     curY + 4.5
   );
@@ -577,19 +587,23 @@ export async function generatePreparednessPdf(data: PreparednessPdfData): Promis
   doc.setFontSize(7);
   doc.setTextColor(51, 65, 85);
   doc.text(
-    '• Observed Signal: Severe heat-collapse inpatient admissions requiring IV fluid resuscitation have risen from 2 cases/day to 9 cases/day.',
+    `• Current Position: ${topRisk2.currentStock.toLocaleString()} ${topRisk2.unit} usable stock | Daily Surge Burn: ${topRisk2.projectedDailyBurn.toLocaleString()} ${topRisk2.unit}/day | 7d Demand: ${Math.round(topRisk2.projectedDailyBurn * 7).toLocaleString()} ${topRisk2.unit}.`,
     margin + 3,
     curY + 8.5
   );
   doc.text(
-    '• Supply Bottleneck: Normal Saline (0.9% NaCl) and Ringer Lactate reserves stand at 3.4 days and 2.5 days of safe stock, zero buffer against potential transport delays.',
+    `• 30-Day Requirement: ${Math.round(topRisk2.projectedDailyBurn * 30).toLocaleString()} ${topRisk2.unit} projected over 30 days under ${data.scenarioName}.`,
     margin + 3,
     curY + 12
   );
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(180, 83, 9);
   doc.text(
-    '• Administrative Directive: Dispatch Fast-Track Indent for +200 bottles of Normal Saline & +150 bottles of Ringer Lactate to avoid clinical stockout.',
+    `• Administrative Directive: ${
+      topRisk2.recommendedReorder > 0
+        ? `Recommended Order Qty: +${topRisk2.recommendedReorder.toLocaleString()} ${topRisk2.unit} to restore 14-day cycle safety buffer.`
+        : `Stock within safe operational threshold (${topRisk2.daysOfSafeStock}d cover).`
+    }`,
     margin + 3,
     curY + 16
   );
@@ -667,12 +681,12 @@ export async function generatePreparednessPdf(data: PreparednessPdfData): Promis
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8);
   doc.setTextColor(15, 23, 42);
-  doc.text('Medical Officer In-Charge (MOIC)', col2X + 4, curY + 10);
+  doc.text(activeOfficer, col2X + 4, curY + 10);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7);
   doc.setTextColor(100, 116, 139);
-  doc.text(`${data.phc.name}`, col2X + 4, curY + 14);
-  doc.text('Signature: ______________________', col2X + 4, curY + 19);
+  doc.text(`MOIC • ${data.phc.name} (${data.phc.district})`, col2X + 4, curY + 14);
+  doc.text(`Verified: ${dateStr} ${timeStr}`, col2X + 4, curY + 19);
 
   // Sign Column 3: RMSCL Warehouse Indent Confirmation
   const col3X = margin + signColW * 2;

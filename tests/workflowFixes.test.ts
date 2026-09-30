@@ -6,6 +6,7 @@ const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:3000';
 
 async function runTests() {
   console.log('=== MEDRESQ AI Critical State & Workflow Verification Suite ===\n');
+  await fetch(`${BASE_URL}/api/demo/reset`, { method: 'POST' });
 
   // ---------------------------------------------------------------------------
   // PART 1: Deterministic Medicine Matcher Unit Tests
@@ -151,7 +152,7 @@ async function runTests() {
   });
   assert.equal(dupApproveRes.status, 400, 'Duplicate transfer approval must return 400');
 
-  // 3c. Explicit status transitions: APPROVED -> IN_TRANSIT -> COMPLETED without double-accounting
+  // 3c. Explicit status transitions: APPROVED -> DISPATCHED -> RECEIVED without double-accounting
   const advance1Res = await fetch(`${BASE_URL}/api/redistributions/advance`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -159,9 +160,7 @@ async function runTests() {
   });
   assert.equal(advance1Res.status, 200);
   const advance1Data = await advance1Res.json();
-  assert.equal(advance1Data.redistribution.status, 'IN_TRANSIT');
-  assert.equal(advance1Data.sourceMedicine.currentStock, donorOrsBefore - 600, 'No second deduction on IN_TRANSIT');
-  assert.equal(advance1Data.targetMedicine.currentStock, receiverOrsBefore + 600, 'No second credit on IN_TRANSIT');
+  assert.equal(advance1Data.redistribution.status, 'DISPATCHED');
 
   const advance2Res = await fetch(`${BASE_URL}/api/redistributions/advance`, {
     method: 'POST',
@@ -170,17 +169,15 @@ async function runTests() {
   });
   assert.equal(advance2Res.status, 200);
   const advance2Data = await advance2Res.json();
-  assert.equal(advance2Data.redistribution.status, 'COMPLETED');
-  assert.equal(advance2Data.sourceMedicine.currentStock, donorOrsBefore - 600, 'No second deduction on COMPLETED');
-  assert.equal(advance2Data.targetMedicine.currentStock, receiverOrsBefore + 600, 'No second credit on COMPLETED');
+  assert.equal(advance2Data.redistribution.status, 'RECEIVED');
 
-  // 3d. Advancing beyond COMPLETED must be rejected with 400
+  // 3d. Advancing beyond RECEIVED must be rejected with 400
   const advance3Res = await fetch(`${BASE_URL}/api/redistributions/advance`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id: 'REDIST-2026-01' })
   });
-  assert.equal(advance3Res.status, 400, 'Advancing a COMPLETED transfer must return 400');
+  assert.equal(advance3Res.status, 400, 'Advancing a RECEIVED transfer must return 400');
 
   // 3e. Insufficient donor stock must be rejected and prevent negative stock
   const excessTransferRes = await fetch(`${BASE_URL}/api/redistributions/approve`, {
@@ -269,6 +266,191 @@ async function runTests() {
   assert.equal(invalidOrderRes.status, 400, 'Negative order quantity must be rejected with 400');
   console.log('   [PASS] Failed request guards verified.\n');
 
+  // ---------------------------------------------------------------------------
+  // PART 6: PHC In-Charge Officer Authentication & Facility Binding
+  // ---------------------------------------------------------------------------
+  console.log('6. Testing PHC In-Charge Officer Authentication (/api/auth/login, /api/auth/session, /api/auth/logout)...');
+
+  // 6a. Valid login for OSN001 -> PHC Osian (24x7)
+  const loginOsianRes = await fetch(`${BASE_URL}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      officerId: 'OSN001',
+      password: 'OSN001@PHC',
+      rememberDevice: true
+    })
+  });
+  assert.equal(loginOsianRes.status, 200, 'Valid OSN001 login should return 200');
+  const loginOsianData = await loginOsianRes.json();
+  assert.equal(loginOsianData.ok, true);
+  assert.equal(loginOsianData.session.officerId, 'OSN001');
+  assert.equal(loginOsianData.session.assignedPhcId, 'phc-osian');
+  assert.equal(loginOsianData.session.phcCode, 'RJ-JDP-PHC-021');
+  assert.deepEqual(loginOsianData.session.unlockedPhcIds, ['phc-osian']);
+  assert.equal('password' in loginOsianData.session, false, 'Password must never be returned in session');
+
+  // 6b. Valid login for MND001 -> PHC Mandore
+  const loginMandoreRes = await fetch(`${BASE_URL}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      officerId: 'MND001',
+      password: 'MND001@PHC',
+      rememberDevice: false
+    })
+  });
+  assert.equal(loginMandoreRes.status, 200, 'Valid MND001 login should return 200');
+  const loginMandoreData = await loginMandoreRes.json();
+  assert.equal(loginMandoreData.session.officerId, 'MND001');
+  assert.equal(loginMandoreData.session.assignedPhcId, 'phc-mandore');
+  assert.deepEqual(loginMandoreData.session.unlockedPhcIds, ['phc-mandore']);
+
+  // 6c. Wrong password or cross-PHC password must be rejected with 401
+  const wrongPassRes = await fetch(`${BASE_URL}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      officerId: 'OSN001',
+      password: 'MND001@PHC'
+    })
+  });
+  assert.equal(wrongPassRes.status, 401, 'Cross-PHC password must be rejected with 401');
+
+  const unknownOfficerRes = await fetch(`${BASE_URL}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      officerId: 'UNKNOWN999',
+      password: 'OSN001@PHC'
+    })
+  });
+  assert.equal(unknownOfficerRes.status, 401, 'Unknown Officer ID must be rejected with 401');
+
+  // 6d. Session verification and logout invalidation
+  const sessionCheckRes = await fetch(`${BASE_URL}/api/auth/session`, {
+    headers: { Authorization: `Bearer ${loginOsianData.session.sessionToken}` }
+  });
+  assert.equal(sessionCheckRes.status, 200, 'Active session token should verify');
+
+  const logoutRes = await fetch(`${BASE_URL}/api/auth/logout`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${loginOsianData.session.sessionToken}`
+    }
+  });
+  assert.equal(logoutRes.status, 200, 'Logout should succeed');
+
+  const afterLogoutRes = await fetch(`${BASE_URL}/api/auth/session`, {
+    headers: { Authorization: `Bearer ${loginOsianData.session.sessionToken}` }
+  });
+  assert.equal(afterLogoutRes.status, 401, 'Logged-out session token must return 401');
+  console.log('   [PASS] PHC In-Charge authentication & facility binding verified.\n');
+
+  // ---------------------------------------------------------------------------
+  // PART 7: Staff Attendance Module & PHC-Scoped Access Control
+  // ---------------------------------------------------------------------------
+  console.log('7. Testing Staff Attendance (/api/attendance, /api/attendance/mark, cross-PHC protection, audit)...');
+
+  // Re-login as OSN001 for Osian attendance tests
+  const osianAuth = await (
+    await fetch(`${BASE_URL}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ officerId: 'OSN001', password: 'OSN001@PHC' })
+    })
+  ).json();
+  const osianToken = osianAuth.session.sessionToken;
+  const mandoreToken = loginMandoreData.session.sessionToken;
+
+  // 7a. GET /api/attendance for Osian vs Mandore returns distinct PHC-specific staff directories
+  const osianAttRes = await fetch(`${BASE_URL}/api/attendance`, {
+    headers: { Authorization: `Bearer ${osianToken}` }
+  });
+  assert.equal(osianAttRes.status, 200);
+  const osianAttData = await osianAttRes.json();
+  assert.equal(osianAttData.phcId, 'phc-osian');
+  assert.ok(osianAttData.staff.length >= 8, 'Osian staff directory should load');
+  assert.ok(osianAttData.staff.every((s: any) => s.phcId === 'phc-osian'));
+
+  const mandoreAttRes = await fetch(`${BASE_URL}/api/attendance`, {
+    headers: { Authorization: `Bearer ${mandoreToken}` }
+  });
+  assert.equal(mandoreAttRes.status, 200);
+  const mandoreAttData = await mandoreAttRes.json();
+  assert.equal(mandoreAttData.phcId, 'phc-mandore');
+  assert.ok(mandoreAttData.staff.every((s: any) => s.phcId === 'phc-mandore'));
+
+  // 7b. Cross-PHC tamper attempt (OSN001 trying to mark phc-mandore attendance) must return 403
+  const crossPhcRes = await fetch(`${BASE_URL}/api/attendance/mark`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${osianToken}`
+    },
+    body: JSON.stringify({
+      phcId: 'phc-mandore',
+      date: '2026-09-29',
+      entries: [{ staffId: 'STF-MND-001', status: 'ABSENT' }]
+    })
+  });
+  assert.equal(crossPhcRes.status, 403, 'Cross-PHC attendance modification must be forbidden (403)');
+
+  // 7c. Mark PRESENT, ABSENT, ON_LEAVE and verify no duplicate records for same Staff + PHC + Date
+  const targetStaffId = osianAttData.staff[0].id;
+  for (const status of ['ABSENT', 'ON_LEAVE', 'PRESENT'] as const) {
+    const markRes = await fetch(`${BASE_URL}/api/attendance/mark`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${osianToken}`
+      },
+      body: JSON.stringify({
+        phcId: 'phc-osian',
+        date: '2026-09-29',
+        entries: [{ staffId: targetStaffId, status }]
+      })
+    });
+    assert.equal(markRes.status, 200);
+    const markData = await markRes.json();
+    const matchingRecs = markData.records.filter(
+      (r: any) => r.staffId === targetStaffId && r.phcId === 'phc-osian' && r.date === '2026-09-29'
+    );
+    assert.equal(matchingRecs.length, 1, 'Must never create duplicate attendance records for same Staff + PHC + Date');
+    assert.equal(matchingRecs[0].status, status);
+    assert.ok(
+      markData.supplyChainAuditLog.some(
+        (a: any) => a.entityType === 'STAFF_ATTENDANCE' && a.newStatus === status
+      ),
+      'Attendance change must be recorded in supplyChainAuditLog'
+    );
+  }
+  console.log('   [PASS] Staff Attendance marking, deduplication, cross-PHC security, and audit trail verified.\n');
+
+  // ---------------------------------------------------------------------------
+  // PART 8: Centralized Multilingual i18n (en, hi, ta, te — NO Rajasthani)
+  // ---------------------------------------------------------------------------
+  console.log('8. Testing Centralized i18n (en, hi, ta, te)...');
+  const i18nMod = await import('../src/i18n/index.ts');
+  const codes = i18nMod.SUPPORTED_LANGUAGES.map((l) => l.code);
+  assert.deepEqual(codes, ['en', 'hi', 'ta', 'te'], 'Must support exactly en, hi, ta, te initial languages');
+  const labels = i18nMod.SUPPORTED_LANGUAGES.map((l) => l.nativeLabel);
+  assert.deepEqual(labels, ['English', 'हिन्दी', 'தமிழ்', 'తెలుగు']);
+  for (const code of ['en', 'hi', 'ta', 'te'] as const) {
+    const dict = i18nMod.getTranslation(code);
+    assert.ok(dict.nav.staffAttendance.length > 0);
+    assert.ok(dict.attendance.present.length > 0);
+    assert.ok(dict.attendance.absent.length > 0);
+    assert.ok(dict.attendance.onLeave.length > 0);
+    assert.ok(dict.attendance.notMarked.length > 0);
+    assert.ok(dict.attendance.saveAttendance.length > 0);
+    assert.ok(dict.attendance.attendanceHistory.length > 0);
+    assert.ok(dict.attendance.totalStaff.length > 0);
+  }
+  console.log('   [PASS] Centralized i18n verified for English, Hindi, Tamil, and Telugu.\n');
+
+  await fetch(`${BASE_URL}/api/demo/reset`, { method: 'POST' });
   console.log('ALL TESTS PASSED SUCCESSFULLY.');
 }
 

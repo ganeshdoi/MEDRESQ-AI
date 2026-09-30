@@ -1,7 +1,12 @@
-import { PHCFacility, Role } from '../types.ts';
+import type { PHCFacility, Role } from '../types.ts';
 import { INDIA_PHC_DIRECTORY } from '../data/indiaPHCDirectory.ts';
 
 export interface PHCInchargeAccount {
+  officerId: string;
+  officerName: string;
+  designation: string;
+  assignedPhcId: string;
+  assignedPhcName: string;
   phcId: string;
   phcName: string;
   phcCode: string;
@@ -11,64 +16,90 @@ export interface PHCInchargeAccount {
   inchargeName: string;
   inchargeEmail: string;
   contactNumber: string;
-  designation: string;
   role: Role;
+  authenticationStatus: 'AUTHENTICATED' | 'UNAUTHENTICATED';
   maskedCredential: string;
   credentialHint: string;
-  customPasscodeDigest?: string;
   isCustomRegistered?: boolean;
   authMode: 'DEMO_ONLY_SIMULATED';
   registeredAt?: string;
 }
 
 export interface AuthenticatedInchargeSession {
+  officerId: string;
+  officerName: string;
+  designation: string;
+  assignedPhcId: string;
+  assignedPhcName: string;
   phcId: string;
   phcName: string;
   phcCode: string;
   district: string;
+  block?: string;
   state: string;
   inchargeName: string;
   inchargeEmail: string;
-  designation: string;
   role: Role;
+  authenticationStatus: 'AUTHENTICATED';
   maskedCredentialUsed: string;
   unlockedPhcIds: string[];
   loginTimestamp: string;
+  sessionToken?: string;
+  rememberDevice?: boolean;
+  loginMode?: 'DEMO_ACCESS' | 'OFFICER_LOGIN';
+  isDemoAccount?: boolean;
   isSimulatedDemoSession: true;
 }
 
 export type ActivePHCSession = AuthenticatedInchargeSession;
 
-const STORAGE_KEY_CUSTOM_ACCOUNTS = 'medresq_phc_incharge_custom_accounts_v2';
-const STORAGE_KEY_ACTIVE_AUTH = 'medresq_phc_active_auth_session_v2';
+const STORAGE_KEY_ACTIVE_AUTH = 'medresq_phc_officer_session_v4';
 
 /**
- * Computes a non-reversible deterministic digest for demo-only passcode checks
- * so no plaintext password is ever stored in localStorage or exposed in the UI.
+ * Canonical 1-to-1 Officer ID mapping for PHC In-Charge accounts based on INDIA_PHC_DIRECTORY.
  */
-export function computeDemoPasscodeDigest(rawInput: string, salt = 'DEMO_PHC_SALT'): string {
-  const normalized = `${salt}:${rawInput.trim().toUpperCase()}`;
-  let h1 = 0xdeadbeef ^ normalized.length;
-  let h2 = 0x41c6ce57 ^ normalized.length;
-  for (let i = 0; i < normalized.length; i++) {
-    const ch = normalized.charCodeAt(i);
-    h1 = Math.imul(h1 ^ ch, 2654435761);
-    h2 = Math.imul(h2 ^ ch, 1597334677);
+const CANONICAL_OFFICER_IDS: Record<string, string> = {
+  'phc-osian': 'OSN001',
+  'phc-mandore': 'MND001',
+  'phc-balesar': 'BLS001',
+  'phc-bilara': 'BLR001',
+  'phc-luni': 'LUN001',
+  'phc-tinwari': 'TNW001',
+  'phc-bap': 'BAP001',
+  'phc-shergarh': 'SHG001',
+  'phc-bhopalgarh': 'BPG001',
+  'phc-pipar': 'PPR001',
+  'phc-phalodi-rural': 'PHL001',
+  'phc-lohawat': 'LHW001',
+  'phc-dechu': 'DCH001',
+  'phc-pokhran': 'PKR001'
+};
+
+/**
+ * Generates a deterministic 1-to-1 Officer ID for any PHC in INDIA_PHC_DIRECTORY.
+ */
+export function getOfficerIdForPHC(phc: PHCFacility): string {
+  if (CANONICAL_OFFICER_IDS[phc.id]) {
+    return CANONICAL_OFFICER_IDS[phc.id];
   }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return `DEMO-HASH-${(h2 >>> 0).toString(16).padStart(8, '0')}${(h1 >>> 0).toString(16).padStart(8, '0')}`;
+  const blockLetters = phc.block
+    .replace(/[^a-zA-Z]/g, '')
+    .toUpperCase()
+    .padEnd(3, 'X')
+    .slice(0, 3);
+  const codeDigits = phc.code.replace(/[^0-9]/g, '').padStart(3, '0').slice(-3);
+  return `${blockLetters}${codeDigits}`;
 }
 
 /**
- * Returns a masked representation for UI display. Never returns a plaintext password.
+ * Returns a masked placeholder for UI display. Never returns a password.
  */
 export function getMaskedPHCCredential(): string {
   return '••••••••••••';
 }
 
 /**
- * Generates a clean demo email handle for the PHC Incharge (Demo Only)
+ * Generates a clean institutional demo email handle for the PHC In-Charge
  */
 export function getDefaultInchargeEmail(phc: PHCFacility): string {
   const cleanBlock = phc.block
@@ -80,130 +111,177 @@ export function getDefaultInchargeEmail(phc: PHCFacility): string {
 }
 
 /**
- * Loads custom registered / updated PHC Incharge accounts from localStorage (hashed digests only)
- */
-export function loadCustomPHCAccounts(): Record<string, Partial<PHCInchargeAccount>> {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY_CUSTOM_ACCOUNTS);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return typeof parsed === 'object' && parsed !== null ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-/**
- * Saves or updates a PHC Incharge account (Sign Up or Reset Demo Passcode) using a masked digest
- */
-export function saveCustomPHCAccount(
-  phcId: string,
-  updates: {
-    inchargeName?: string;
-    inchargeEmail?: string;
-    contactNumber?: string;
-    designation?: string;
-    role?: Role;
-    newDemoPasscode?: string;
-  }
-): void {
-  try {
-    const existing = loadCustomPHCAccounts();
-    const prev = existing[phcId] || {};
-    const nextRecord: Partial<PHCInchargeAccount> = {
-      ...prev,
-      phcId,
-      inchargeName: updates.inchargeName ?? prev.inchargeName,
-      inchargeEmail: updates.inchargeEmail ?? prev.inchargeEmail,
-      contactNumber: updates.contactNumber ?? prev.contactNumber,
-      designation: updates.designation ?? prev.designation ?? 'Medical Officer In-Charge (MOIC)',
-      role: updates.role ?? prev.role ?? 'medical_officer',
-      maskedCredential: '••••••••••••',
-      isCustomRegistered: true,
-      authMode: 'DEMO_ONLY_SIMULATED',
-      registeredAt: new Date().toISOString()
-    };
-    if (updates.newDemoPasscode && updates.newDemoPasscode.trim().length > 0) {
-      nextRecord.customPasscodeDigest = computeDemoPasscodeDigest(updates.newDemoPasscode, phcId);
-    }
-    existing[phcId] = nextRecord;
-    localStorage.setItem(STORAGE_KEY_CUSTOM_ACCOUNTS, JSON.stringify(existing));
-  } catch {
-    // Ignore storage errors in restricted environments
-  }
-}
-
-/**
- * Gets the resolved PHC Incharge account for a specific PHC (masked credentials only)
+ * Gets the resolved PHC In-Charge account metadata for a specific PHC (no passwords or secrets).
  */
 export function getPHCInchargeAccount(phc: PHCFacility): PHCInchargeAccount {
-  const customMap = loadCustomPHCAccounts();
-  const custom = customMap[phc.id];
+  const officerId = getOfficerIdForPHC(phc);
+  const officerName = phc.medicalOfficerInCharge;
+  const designation = 'Medical Officer In-Charge (MOIC)';
+
   return {
+    officerId,
+    officerName,
+    designation,
+    assignedPhcId: phc.id,
+    assignedPhcName: phc.name,
     phcId: phc.id,
     phcName: phc.name,
     phcCode: phc.code,
     district: phc.district,
     block: phc.block,
     state: phc.state,
-    inchargeName: custom?.inchargeName || phc.medicalOfficerInCharge,
-    inchargeEmail: custom?.inchargeEmail || getDefaultInchargeEmail(phc),
-    contactNumber: custom?.contactNumber || phc.contactNumber,
-    designation: custom?.designation || 'Medical Officer In-Charge (MOIC)',
-    role: custom?.role || 'medical_officer',
+    inchargeName: officerName,
+    inchargeEmail: getDefaultInchargeEmail(phc),
+    contactNumber: phc.contactNumber,
+    role: 'medical_officer',
+    authenticationStatus: 'UNAUTHENTICATED',
     maskedCredential: '••••••••••••',
-    credentialHint: custom?.isCustomRegistered
-      ? 'Custom Demo Passcode Configured (Masked)'
-      : 'Demo Facility Passcode (Masked — Use Demo Mode Sign-In)',
-    customPasscodeDigest: custom?.customPasscodeDigest,
-    isCustomRegistered: Boolean(custom?.isCustomRegistered),
-    authMode: 'DEMO_ONLY_SIMULATED',
-    registeredAt: custom?.registeredAt
+    credentialHint: 'Server-Verified PHC Officer Credential',
+    isCustomRegistered: false,
+    authMode: 'DEMO_ONLY_SIMULATED'
   };
 }
 
 /**
- * Alias for compatibility with TopBar and AppContext — returns masked credentials only
+ * Alias for compatibility — returns public officer metadata with masked credential placeholder only.
  */
 export function getPHCInchargeCredential(phc: PHCFacility): PHCInchargeAccount {
   return getPHCInchargeAccount(phc);
 }
 
 /**
- * Builds the full directory of all 53 PHC Incharge accounts with masked credentials only.
+ * Builds the directory of all PHC In-Charge accounts (metadata only, no passwords).
  */
 export function getAllPHCInchargeAccounts(): PHCInchargeAccount[] {
   return INDIA_PHC_DIRECTORY.map((phc) => getPHCInchargeAccount(phc));
 }
 
 /**
- * Verifies a simulated demo credential without exposing plaintext passwords in source or UI.
+ * Resolves a PHC facility and its assigned Officer Account from an entered Officer ID
+ * (supports Officer ID e.g. OSN001, MND001, BLS001, BLR001, or PHC Code e.g. RJ-JDP-PHC-021, or MOIC email).
  */
-export function verifyDemoPHCCredential(phc: PHCFacility, enteredPasscode: string): boolean {
-  const trimmed = enteredPasscode.trim();
-  if (!trimmed) return false;
-  const account = getPHCInchargeAccount(phc);
-  if (account.customPasscodeDigest) {
-    const enteredDigest = computeDemoPasscodeDigest(trimmed, phc.id);
-    if (enteredDigest === account.customPasscodeDigest) return true;
+export function resolvePHCByOfficerId(
+  rawOfficerId: string,
+  facilities: PHCFacility[] = INDIA_PHC_DIRECTORY
+): { phc: PHCFacility; account: PHCInchargeAccount } | null {
+  const cleaned = rawOfficerId.trim().toUpperCase();
+  if (!cleaned) return null;
+
+  for (const phc of facilities) {
+    const account = getPHCInchargeAccount(phc);
+    if (
+      account.officerId.toUpperCase() === cleaned ||
+      phc.code.toUpperCase() === cleaned ||
+      phc.id.toUpperCase() === cleaned ||
+      account.inchargeEmail.toUpperCase() === cleaned
+    ) {
+      return { phc, account };
+    }
   }
-  if (trimmed.toUpperCase() === 'DEMO' || trimmed.toUpperCase() === phc.code.toUpperCase()) {
-    return true;
-  }
-  return trimmed.length >= 4;
+  return null;
 }
 
 /**
- * Active PHC Auth Session helpers
+ * Creates a sanitized AuthenticatedInchargeSession bound strictly to the officer's assigned PHC.
+ */
+export function createBoundInchargeSession(
+  phc: PHCFacility,
+  account: PHCInchargeAccount,
+  options?: {
+    sessionToken?: string;
+    rememberDevice?: boolean;
+    loginTimestamp?: string;
+    loginMode?: 'DEMO_ACCESS' | 'OFFICER_LOGIN';
+    isDemoAccount?: boolean;
+  }
+): AuthenticatedInchargeSession {
+  const loginMode = options?.loginMode || 'OFFICER_LOGIN';
+  const isDemoAccount = options?.isDemoAccount ?? loginMode === 'DEMO_ACCESS';
+  return {
+    officerId: account.officerId,
+    officerName: account.officerName,
+    designation: isDemoAccount ? 'Medical Officer In-Charge' : account.designation,
+    assignedPhcId: phc.id,
+    assignedPhcName: phc.name,
+    phcId: phc.id,
+    phcName: phc.name,
+    phcCode: phc.code,
+    district: phc.district,
+    block: phc.block,
+    state: phc.state,
+    inchargeName: account.officerName,
+    inchargeEmail: account.inchargeEmail,
+    role: account.role,
+    authenticationStatus: 'AUTHENTICATED',
+    maskedCredentialUsed: isDemoAccount ? 'DEMO ACCESS (NO PASSWORD)' : '••••••••••••',
+    unlockedPhcIds: [phc.id],
+    loginTimestamp:
+      options?.loginTimestamp ||
+      new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    sessionToken: options?.sessionToken,
+    rememberDevice: Boolean(options?.rememberDevice),
+    loginMode,
+    isDemoAccount,
+    isSimulatedDemoSession: true
+  };
+}
+
+/**
+ * Creates the canonical synthetic Demo Medical Officer session for PHC Osian (Jodhpur, Rajasthan).
+ * Uses the existing AuthenticatedInchargeSession structure without creating a second auth system.
+ */
+export function createDemoOfficerSession(
+  facilities: PHCFacility[] = INDIA_PHC_DIRECTORY,
+  options?: { sessionToken?: string; loginTimestamp?: string }
+): { session: AuthenticatedInchargeSession; assignedPHC: PHCFacility } {
+  const demoPhc =
+    facilities.find((f) => f.id === 'phc-osian' || f.code === 'RJ-JDP-PHC-021') ||
+    facilities[0] ||
+    INDIA_PHC_DIRECTORY[0];
+  const account = getPHCInchargeAccount(demoPhc);
+  const demoAccount: PHCInchargeAccount = {
+    ...account,
+    officerId: 'OSN001',
+    officerName: 'Dr. Suresh Chandra Bishnoi',
+    inchargeName: 'Dr. Suresh Chandra Bishnoi',
+    designation: 'Medical Officer In-Charge',
+    district: 'Jodhpur',
+    state: 'Rajasthan'
+  };
+  const session = createBoundInchargeSession(demoPhc, demoAccount, {
+    sessionToken: options?.sessionToken,
+    rememberDevice: false,
+    loginTimestamp: options?.loginTimestamp,
+    loginMode: 'DEMO_ACCESS',
+    isDemoAccount: true
+  });
+  return { session, assignedPHC: demoPhc };
+}
+
+/**
+ * Active PHC Auth Session helpers (stores only non-sensitive session identity, never passwords).
  */
 export function loadSavedInchargeSession(): AuthenticatedInchargeSession | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_ACTIVE_AUTH);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as AuthenticatedInchargeSession;
+    localStorage.removeItem('medresq_phc_active_auth_session_v2');
+    localStorage.removeItem('medresq_phc_incharge_custom_accounts_v2');
+    const rawSession =
+      sessionStorage.getItem(STORAGE_KEY_ACTIVE_AUTH) ||
+      localStorage.getItem(STORAGE_KEY_ACTIVE_AUTH);
+    if (!rawSession) return null;
+    const parsed = JSON.parse(rawSession) as AuthenticatedInchargeSession;
+    if (!parsed || !parsed.phcId || !parsed.officerId) return null;
     return {
       ...parsed,
-      maskedCredentialUsed: '••••••••••••',
+      assignedPhcId: parsed.assignedPhcId || parsed.phcId,
+      assignedPhcName: parsed.assignedPhcName || parsed.phcName,
+      officerName: parsed.officerName || parsed.inchargeName,
+      authenticationStatus: 'AUTHENTICATED',
+      unlockedPhcIds: [parsed.assignedPhcId || parsed.phcId],
+      maskedCredentialUsed:
+        parsed.loginMode === 'DEMO_ACCESS' ? 'DEMO ACCESS (NO PASSWORD)' : '••••••••••••',
+      loginMode: parsed.loginMode || 'OFFICER_LOGIN',
+      isDemoAccount: Boolean(parsed.isDemoAccount || parsed.loginMode === 'DEMO_ACCESS'),
       isSimulatedDemoSession: true
     };
   } catch {
@@ -211,17 +289,40 @@ export function loadSavedInchargeSession(): AuthenticatedInchargeSession | null 
   }
 }
 
-export function saveInchargeSession(session: AuthenticatedInchargeSession | null): void {
+export function saveInchargeSession(
+  session: AuthenticatedInchargeSession | null,
+  rememberDevice?: boolean
+): void {
   try {
+    localStorage.removeItem('medresq_phc_active_auth_session_v2');
+    localStorage.removeItem('medresq_phc_incharge_custom_accounts_v2');
     if (!session) {
+      sessionStorage.removeItem(STORAGE_KEY_ACTIVE_AUTH);
       localStorage.removeItem(STORAGE_KEY_ACTIVE_AUTH);
     } else {
+      const boundPhcId = session.assignedPhcId || session.phcId;
+      const shouldRemember = rememberDevice ?? session.rememberDevice ?? false;
       const sanitized: AuthenticatedInchargeSession = {
         ...session,
-        maskedCredentialUsed: '••••••••••••',
+        assignedPhcId: boundPhcId,
+        assignedPhcName: session.assignedPhcName || session.phcName,
+        officerName: session.officerName || session.inchargeName,
+        authenticationStatus: 'AUTHENTICATED',
+        unlockedPhcIds: [boundPhcId],
+        maskedCredentialUsed:
+          session.loginMode === 'DEMO_ACCESS' ? 'DEMO ACCESS (NO PASSWORD)' : '••••••••••••',
+        rememberDevice: shouldRemember,
+        loginMode: session.loginMode || 'OFFICER_LOGIN',
+        isDemoAccount: Boolean(session.isDemoAccount || session.loginMode === 'DEMO_ACCESS'),
         isSimulatedDemoSession: true
       };
-      localStorage.setItem(STORAGE_KEY_ACTIVE_AUTH, JSON.stringify(sanitized));
+      const serialized = JSON.stringify(sanitized);
+      sessionStorage.setItem(STORAGE_KEY_ACTIVE_AUTH, serialized);
+      if (shouldRemember) {
+        localStorage.setItem(STORAGE_KEY_ACTIVE_AUTH, serialized);
+      } else {
+        localStorage.removeItem(STORAGE_KEY_ACTIVE_AUTH);
+      }
     }
   } catch {
     // Ignore storage errors

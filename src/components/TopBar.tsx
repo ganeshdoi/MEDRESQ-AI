@@ -26,9 +26,12 @@ import {
   Unlock,
   ShieldCheck,
   UserPlus,
-  HelpCircle
+  HelpCircle,
+  RefreshCw,
+  Globe
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.tsx';
+import { SUPPORTED_LANGUAGES, type SupportedLanguageCode } from '../i18n/index.ts';
 import { Role, PHCFacility } from '../types.ts';
 import { evaluateMedicineThresholdAndReplenishment } from '../utils/inventoryForecast.ts';
 import { getPHCInchargeCredential, AuthenticatedInchargeSession } from '../utils/phcAuthDirectory.ts';
@@ -38,6 +41,10 @@ import {
   GlobalSearchResultCategory,
   GlobalSearchResultItem
 } from '../utils/globalSearch.ts';
+import {
+  getDatasetFacilityMetrics,
+  getCanonicalAlertMetrics
+} from '../utils/datasetMetrics.ts';
 
 export const TopBar: React.FC = () => {
   const {
@@ -48,6 +55,8 @@ export const TopBar: React.FC = () => {
     setRole,
     isOfflineMode,
     toggleOfflineMode,
+    offlineQueue,
+    isQueueSyncing,
     alerts,
     orders,
     redistributions,
@@ -66,7 +75,10 @@ export const TopBar: React.FC = () => {
     inchargeSession,
     openAuthModal,
     authenticatePHCIncharge,
-    signOutIncharge
+    signOutIncharge,
+    language,
+    setLanguage,
+    t
   } = useApp();
 
   // Notification Bell state
@@ -173,9 +185,24 @@ export const TopBar: React.FC = () => {
   }, [globalQuery, medicines, facilities, alerts, orders, redistributions, selectedPHC, searchCategory]);
 
   const handleSelectSearchResult = (item: GlobalSearchResultItem) => {
-    if (item.phcToSelect) {
-      setSelectedPHC(item.phcToSelect);
-      showNotification(`Switched active facility to ${item.phcToSelect.name} (${item.phcToSelect.code}).`);
+    if (item.phcToSelect && item.phcToSelect.id !== selectedPHC.id) {
+      setActiveModule('map');
+      setTimeout(() => {
+        window.dispatchEvent(
+          new CustomEvent('medresq:global-search', {
+            detail: {
+              query: item.phcToSelect!.name,
+              category: item.category,
+              phcId: item.phcToSelect!.id
+            }
+          })
+        );
+      }, 60);
+      showNotification(
+        `Inspecting peer facility ${item.phcToSelect.name} on Network Stock Map (Active session remains bound to ${selectedPHC.name}).`
+      );
+      setIsSearchOpen(false);
+      return;
     }
     setActiveModule(item.targetModule);
 
@@ -203,45 +230,10 @@ export const TopBar: React.FC = () => {
     }
   };
 
-  const handleSelectPHC = (fac: PHCFacility) => {
-    setSelectedPHC(fac);
-    setIsPhcPickerOpen(false);
-    setPhcSearchQuery('');
-    showNotification(`Active facility switched to ${fac.name} (${fac.block}, ${fac.district}).`);
-  };
-
-  const handleInstantUnlockAndSwitchPHC = (fac: PHCFacility) => {
-    const cred = getPHCInchargeCredential(fac);
-    const prevUnlocked = inchargeSession?.unlockedPhcIds || [];
-    const nextUnlocked = Array.from(new Set([...prevUnlocked, fac.id]));
-    const newSession: AuthenticatedInchargeSession = {
-      phcId: fac.id,
-      phcName: fac.name,
-      phcCode: fac.code,
-      district: fac.district,
-      state: fac.state,
-      inchargeName: cred.inchargeName,
-      inchargeEmail: cred.inchargeEmail,
-      designation: cred.designation,
-      role: cred.role,
-      maskedCredentialUsed: '••••••••••••',
-      unlockedPhcIds: nextUnlocked,
-      loginTimestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      isSimulatedDemoSession: true
-    };
-    authenticatePHCIncharge(newSession, fac);
-    setIsPhcPickerOpen(false);
-    setPhcSearchQuery('');
-    showNotification(
-      `[DEMO ONLY] Switched simulated session to ${fac.name} (${fac.district}) as ${cred.inchargeName}.`
-    );
-  };
-
-  const unreadStockAlertCount = proactiveStockAlerts.filter((a) => !a.read).length;
-  const activeAlertCount = alerts.filter(
-    (a) => a && a.status === 'ACTIVE' && (a.category === 'CRITICAL' || a.category === 'WARNING')
-  ).length;
-  const badgeCount = Math.max(unreadStockAlertCount, activeAlertCount);
+  const canonicalAlertMetrics = getCanonicalAlertMetrics(alerts, proactiveStockAlerts);
+  const unreadStockAlertCount = canonicalAlertMetrics.unreadLowStockNotifications;
+  const activeAlertCount = canonicalAlertMetrics.activeSystemAlertsCount;
+  const badgeCount = unreadStockAlertCount > 0 ? unreadStockAlertCount : canonicalAlertMetrics.totalLowStockNotifications;
 
   const getCategoryIcon = (cat: GlobalSearchResultCategory) => {
     switch (cat) {
@@ -286,206 +278,27 @@ export const TopBar: React.FC = () => {
           <Menu className="w-5 h-5" />
         </button>
 
-        {/* Non-Overlapping Searchable PHC Facility Picker */}
-        <div className="relative" ref={phcPickerRef}>
-          <button
-            type="button"
-            id="facility-selector-btn"
-            onClick={() => {
-              setIsPhcPickerOpen((prev) => !prev);
-              setIsSearchOpen(false);
-              setIsBellOpen(false);
-            }}
-            aria-expanded={isPhcPickerOpen}
-            aria-label={`Selected Facility: ${selectedPHC.name}. Click to switch PHC`}
-            className={`flex items-center gap-2 px-2.5 sm:px-3 py-1.5 rounded-lg border text-left transition-colors cursor-pointer ${
-              isPhcPickerOpen
-                ? 'border-emerald-600 bg-emerald-50/50 ring-2 ring-emerald-500/20'
-                : 'border-slate-200 bg-slate-50 hover:border-slate-300 hover:bg-slate-100/70'
-            }`}
-          >
-            <Building2 className="w-4 h-4 text-emerald-600 shrink-0" aria-hidden="true" />
-            <div className="min-w-0 max-w-[135px] sm:max-w-[190px] xl:max-w-[230px]">
-              <div className="font-bold text-slate-900 text-xs truncate leading-tight">
-                {selectedPHC.name}
-              </div>
-              <div className="text-[10px] text-slate-500 truncate leading-tight hidden sm:block">
-                {selectedPHC.block} · {selectedPHC.district}
-              </div>
+        {/* Bound Assigned PHC Facility Indicator (Read-Only — Bound to Officer Session) */}
+        <div
+          id="assigned-facility-badge"
+          className="flex items-center gap-2 px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-left"
+          title={`Assigned Facility: ${selectedPHC.name} (${selectedPHC.code}) — Bound to Officer ${
+            inchargeSession?.officerId || getPHCInchargeCredential(selectedPHC).officerId
+          }`}
+        >
+          <Building2 className="w-4 h-4 text-emerald-600 shrink-0" aria-hidden="true" />
+          <div className="min-w-0 max-w-[155px] sm:max-w-[210px] xl:max-w-[250px]">
+            <div className="font-bold text-slate-900 text-xs truncate leading-tight flex items-center gap-1.5">
+              <span className="truncate">{selectedPHC.name}</span>
+              <span className="font-mono text-[10px] text-emerald-700 shrink-0 hidden md:inline">
+                ({selectedPHC.code})
+              </span>
             </div>
-            <ChevronDown
-              className={`w-3.5 h-3.5 text-slate-500 shrink-0 transition-transform ${
-                isPhcPickerOpen ? 'rotate-180 text-emerald-700' : ''
-              }`}
-            />
-          </button>
-
-          {/* Searchable PHC Dropdown Panel — anchored left-0 inside main viewport so it never overlaps Sidebar */}
-          {isPhcPickerOpen && (
-            <div
-              role="dialog"
-              aria-label="Switch Primary Health Centre"
-              className="absolute left-0 top-full mt-2 w-[320px] sm:w-[400px] bg-white rounded-xl border border-slate-200 shadow-2xl z-50 overflow-hidden"
-            >
-              <div className="p-3 bg-slate-900 text-white space-y-2">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-[10px] font-mono uppercase tracking-wider text-emerald-400">
-                      PHC Facility Switcher ({facilities.length} Facilities)
-                    </div>
-                    <div className="text-xs font-bold">
-                      Select Active Primary Health Centre
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setIsPhcPickerOpen(false)}
-                    className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white cursor-pointer"
-                    aria-label="Close facility switcher"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-
-                {/* Search Input inside PHC Picker */}
-                <div className="relative">
-                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-                  <input
-                    ref={phcSearchInputRef}
-                    type="text"
-                    value={phcSearchQuery}
-                    onChange={(e) => setPhcSearchQuery(e.target.value)}
-                    placeholder="Filter PHC by name, block, district, state, code..."
-                    className="w-full pl-8 pr-7 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  />
-                  {phcSearchQuery && (
-                    <button
-                      type="button"
-                      onClick={() => setPhcSearchQuery('')}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-
-                {/* Scope Filter Tabs */}
-                <div className="flex items-center gap-1 pt-0.5 text-[10px] font-semibold">
-                  {(
-                    [
-                      { id: 'ALL', label: `All (${facilities.length})` },
-                      { id: 'RAJASTHAN', label: 'Rajasthan' },
-                      { id: '24X7', label: '24x7 PHC' },
-                      { id: 'CHC', label: 'CHC' }
-                    ] as const
-                  ).map((tab) => (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      onClick={() => setPhcScopeFilter(tab.id)}
-                      className={`px-2 py-1 rounded transition-colors cursor-pointer ${
-                        phcScopeFilter === tab.id
-                          ? 'bg-emerald-600 text-white font-bold'
-                          : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                      }`}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="max-h-72 overflow-y-auto divide-y divide-slate-100 custom-scrollbar">
-                {filteredFacilities.length === 0 ? (
-                  <div className="p-5 text-center text-xs text-slate-500">
-                    No facility matches "{phcSearchQuery}". Try searching by district or state.
-                  </div>
-                ) : (
-                  filteredFacilities.map((fac) => {
-                    const isSelected = fac.id === selectedPHC.id;
-                    const isUnlocked =
-                      isSelected || Boolean(inchargeSession?.unlockedPhcIds?.includes(fac.id));
-                    const cred = getPHCInchargeCredential(fac);
-                    return (
-                      <button
-                        key={fac.id}
-                        type="button"
-                        onClick={() => handleSelectPHC(fac)}
-                        className={`w-full p-3 text-left transition-colors flex items-start justify-between gap-2 cursor-pointer ${
-                          isSelected
-                            ? 'bg-emerald-50/80 hover:bg-emerald-50'
-                            : 'bg-white hover:bg-slate-50'
-                        }`}
-                      >
-                        <div className="min-w-0 space-y-0.5">
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-bold text-xs text-slate-900 truncate">
-                              {fac.name}
-                            </span>
-                            <span className="font-mono text-[10px] text-slate-500 shrink-0">
-                              ({fac.code})
-                            </span>
-                          </div>
-                          <div className="text-[11px] text-slate-600 truncate">
-                            {fac.type} · {fac.block} Block, {fac.district}, {fac.state}
-                          </div>
-                          <div className="text-[10px] text-slate-500 font-mono truncate flex items-center gap-1.5">
-                            <span>Incharge: {cred.inchargeName}</span>
-                            <span>·</span>
-                            <span className="text-slate-600 bg-slate-100 px-1.5 py-0.2 rounded border border-slate-200 font-bold">
-                              Demo Key: {cred.maskedCredential}
-                            </span>
-                          </div>
-                        </div>
-                        {isSelected ? (
-                          <span className="px-2 py-0.5 rounded bg-emerald-700 text-white text-[10px] font-mono font-bold shrink-0 flex items-center gap-1">
-                            <CheckCircle2 className="w-3 h-3" />
-                            <span>Active</span>
-                          </span>
-                        ) : isUnlocked ? (
-                          <span className="px-2 py-0.5 rounded bg-teal-50 text-teal-800 border border-teal-200 text-[10px] font-mono font-bold shrink-0 flex items-center gap-1">
-                            <Unlock className="w-3 h-3" />
-                            <span>Unlocked</span>
-                          </span>
-                        ) : (
-                          <div className="flex items-center gap-1 shrink-0">
-                            <span
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleInstantUnlockAndSwitchPHC(fac);
-                              }}
-                              className="px-2 py-0.5 rounded bg-teal-600 hover:bg-teal-700 text-white text-[10px] font-bold flex items-center gap-1 cursor-pointer"
-                              title={`1-Click Unlock & Switch to ${fac.name}`}
-                            >
-                              <Unlock className="w-3 h-3" />
-                              <span>1-Click Switch</span>
-                            </span>
-                          </div>
-                        )}
-                      </button>
-                    );
-                  })
-                )}
-              </div>
-
-              <div className="p-2.5 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-[11px]">
-                <span className="text-slate-500 font-mono">
-                  Showing {filteredFacilities.length} of {facilities.length} PHCs
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsPhcPickerOpen(false);
-                    setActiveModule('directory');
-                  }}
-                  className="text-emerald-700 hover:text-emerald-800 font-bold flex items-center gap-1 cursor-pointer"
-                >
-                  <span>Open Full PHC Directory</span>
-                  <ArrowRight className="w-3 h-3" />
-                </button>
-              </div>
+            <div className="text-[10px] text-slate-500 truncate leading-tight hidden sm:block">
+              {selectedPHC.block} · {selectedPHC.district}, {selectedPHC.state}
             </div>
-          )}
+          </div>
+          <Lock className="w-3 h-3 text-teal-600 shrink-0" aria-label="Bound to authenticated session" />
         </div>
 
         {/* Officer Role Selector (Desktop) */}
@@ -705,8 +518,17 @@ export const TopBar: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => {
-                              setSelectedPHC(item.phcToSelect!);
                               setActiveModule('map');
+                              setTimeout(() => {
+                                window.dispatchEvent(
+                                  new CustomEvent('medresq:global-search', {
+                                    detail: {
+                                      query: item.phcToSelect!.name,
+                                      phcId: item.phcToSelect!.id
+                                    }
+                                  })
+                                );
+                              }, 60);
                               setIsSearchOpen(false);
                               showNotification(`Focused Network Stock Map on ${item.phcToSelect!.name}.`);
                             }}
@@ -763,34 +585,83 @@ export const TopBar: React.FC = () => {
           <span>Export PDF / CSV</span>
         </button>
 
-        <button
-          type="button"
-          id="toggle-offline-mode"
-          onClick={toggleOfflineMode}
-          aria-pressed={isOfflineMode}
-          title={
-            isOfflineMode
-              ? 'Working Offline: Changes are saved on this device and will sync automatically'
-              : 'Connected Online'
-          }
-          className={`flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap cursor-pointer ${
-            isOfflineMode
-              ? 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100'
-              : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-          }`}
-        >
-          {isOfflineMode ? (
-            <>
-              <WifiOff className="w-3.5 h-3.5 text-amber-700 shrink-0" aria-hidden="true" />
-              <span className="hidden md:inline">Offline Mode</span>
-            </>
-          ) : (
-            <>
-              <Wifi className="w-3.5 h-3.5 text-emerald-600 shrink-0" aria-hidden="true" />
-              <span className="hidden md:inline">Online</span>
-            </>
-          )}
-        </button>
+        {(() => {
+          const failedRetryCount = offlineQueue.filter(
+            (item) => item.status === 'FAILED_RETRY' || item.retryCount > 0
+          ).length;
+          const pendingSyncCount = offlineQueue.filter(
+            (item) => item.status !== 'SYNCED'
+          ).length;
+
+          return (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                id="toggle-offline-mode"
+                onClick={toggleOfflineMode}
+                aria-pressed={isOfflineMode}
+                title={
+                  isOfflineMode
+                    ? 'Offline: Actions are queued locally and will sync when online'
+                    : isQueueSyncing
+                    ? 'Syncing: Uploading queued records to cloud'
+                    : failedRetryCount > 0
+                    ? `Online (${failedRetryCount} failed item(s) requiring retry)`
+                    : 'Online: Connected to cloud & local ledger'
+                }
+                className={`flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap cursor-pointer ${
+                  isOfflineMode
+                    ? 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100'
+                    : isQueueSyncing
+                    ? 'bg-blue-50 text-blue-900 border-blue-300 hover:bg-blue-100'
+                    : failedRetryCount > 0
+                    ? 'bg-rose-50 text-rose-900 border-rose-300 hover:bg-rose-100'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                {isOfflineMode ? (
+                  <>
+                    <WifiOff className="w-3.5 h-3.5 text-amber-700 shrink-0" aria-hidden="true" />
+                    <span className="hidden md:inline font-semibold">
+                      Offline{pendingSyncCount > 0 ? ` (${pendingSyncCount} Queued)` : ''}
+                    </span>
+                  </>
+                ) : isQueueSyncing ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 text-blue-600 animate-spin shrink-0" aria-hidden="true" />
+                    <span className="hidden md:inline font-semibold">Syncing...</span>
+                  </>
+                ) : failedRetryCount > 0 ? (
+                  <>
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" aria-hidden="true" />
+                    <span className="hidden md:inline font-semibold">
+                      Online · {failedRetryCount} Retry Needed
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Wifi className="w-3.5 h-3.5 text-emerald-600 shrink-0" aria-hidden="true" />
+                    <span className="hidden md:inline">Online</span>
+                  </>
+                )}
+              </button>
+              {(failedRetryCount > 0 || pendingSyncCount > 0) && (
+                <button
+                  type="button"
+                  onClick={() => setActiveModule('offline-queue')}
+                  title="Open Offline Sync Queue to inspect or retry items"
+                  className={`px-2 py-2 rounded-lg text-[11px] font-mono font-bold border transition-colors cursor-pointer ${
+                    failedRetryCount > 0
+                      ? 'bg-rose-600 hover:bg-rose-700 text-white border-rose-700'
+                      : 'bg-amber-100 hover:bg-amber-200 text-amber-900 border-amber-300'
+                  }`}
+                >
+                  {failedRetryCount > 0 ? `Retry (${failedRetryCount})` : `Queue (${pendingSyncCount})`}
+                </button>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Proactive Critical Stock Threshold Notification Bell & Dropdown */}
         <div className="relative" ref={bellRef}>
@@ -832,7 +703,10 @@ export const TopBar: React.FC = () => {
                     Stock Threshold Monitor · {selectedPHC.code}
                   </div>
                   <div className="text-xs font-bold mt-0.5">
-                    Low-Stock Medicine Alerts ({proactiveStockAlerts.length})
+                    Low-Stock Threshold Notifications ({canonicalAlertMetrics.totalLowStockNotifications} Total · {canonicalAlertMetrics.unreadLowStockNotifications} Unread)
+                  </div>
+                  <div className="text-[10px] text-slate-400 font-mono">
+                    {canonicalAlertMetrics.criticalLowStockNotifications} Critical · {canonicalAlertMetrics.warningLowStockNotifications} Warning · {activeAlertCount} Active System Alerts
                   </div>
                 </div>
 
@@ -1084,65 +958,138 @@ export const TopBar: React.FC = () => {
                   type="button"
                   onClick={() => {
                     setIsHelpOpen(false);
-                    openAuthModal('directory');
+                    setActiveModule('records');
                   }}
                   className="w-full p-2.5 rounded-xl border border-teal-200 bg-teal-50/60 hover:bg-teal-100/70 text-left transition-all cursor-pointer flex items-center justify-between gap-2"
                 >
                   <div>
-                    <div className="font-bold text-teal-950">4. Switch PHC or Browse 53 Sample PHCs</div>
-                    <div className="text-[11px] text-teal-800">Credentials Masked (<code className="font-mono font-bold">••••••••••••</code> · Demo Only)</div>
+                    <div className="font-bold text-teal-950">
+                      4. Register Scan (OCR) &amp; Audit Reports
+                    </div>
+                    <div className="text-[11px] text-teal-800">Verify stock book entries &amp; export monthly PDF/CSV reports.</div>
                   </div>
-                  <KeyRound className="w-4 h-4 text-teal-700 shrink-0" />
+                  <ArrowRight className="w-4 h-4 text-teal-700 shrink-0" />
                 </button>
               </div>
             </div>
           )}
         </div>
 
-        <button
-          type="button"
-          onClick={() => openAuthModal('directory')}
-          className="hidden md:flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-teal-50 hover:bg-teal-100 text-teal-900 border border-teal-200 transition-colors whitespace-nowrap cursor-pointer"
-          title="Open PHC Incharge Directory (Simulated Demo Accounts)"
-        >
-          <KeyRound className="w-3.5 h-3.5 text-teal-700 shrink-0" />
-          <span>PHC Directory (Demo)</span>
-        </button>
+        {/* Centralized Language Selector (English, हिन्दी, தமிழ், తెలుగు) */}
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-xl bg-slate-50 border border-slate-200 shrink-0">
+          <Globe className="w-3.5 h-3.5 text-teal-700 shrink-0" aria-hidden="true" />
+          <label htmlFor="ui-language-selector" className="sr-only">
+            {t.common.languageLabel}
+          </label>
+          <select
+            id="ui-language-selector"
+            aria-label={t.common.languageLabel}
+            value={language}
+            onChange={(e) => setLanguage(e.target.value as SupportedLanguageCode)}
+            className="bg-transparent text-xs font-bold text-slate-800 focus:outline-none cursor-pointer pr-1"
+          >
+            {SUPPORTED_LANGUAGES.map((lang) => (
+              <option key={lang.code} value={lang.code}>
+                {lang.nativeLabel}
+              </option>
+            ))}
+          </select>
+        </div>
 
         <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
-          <button
-            type="button"
-            onClick={() => openAuthModal('signin', selectedPHC)}
-            className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200 transition-colors cursor-pointer"
-            title="View Simulated PHC Incharge Profile (Demo Only)"
-          >
-            <div className="w-7 h-7 rounded-lg bg-linear-to-br from-teal-600 to-emerald-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
-              {(inchargeSession?.inchargeName || selectedPHC.medicalOfficerInCharge || 'M')[0].toUpperCase()}
-            </div>
-            <div className="hidden sm:block text-left min-w-0 max-w-[130px]">
-              <div className="text-[11px] font-bold text-slate-900 truncate leading-tight">
-                {inchargeSession?.inchargeName || selectedPHC.medicalOfficerInCharge}
-              </div>
-              <div className="text-[10px] font-mono text-amber-800 font-bold truncate leading-tight">
-                DEMO ONLY • {getPHCInchargeCredential(selectedPHC).maskedCredential}
-              </div>
-            </div>
-          </button>
+          {!inchargeSession ? (
+            <>
+              <span
+                id="demo-readonly-mode-badge"
+                className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-[11px] font-mono font-bold shrink-0"
+                title="Public demonstration mode — read-only exploration is open. Modifying supply-chain data requires authentication."
+              >
+                <Lock className="w-3 h-3 text-amber-700 shrink-0" />
+                <span>{t.common.demoReadOnlyMode}</span>
+              </span>
 
-          <button
-            type="button"
-            onClick={() => {
-              signOutIncharge();
-              if (currentUser) {
-                signOutUser();
-              }
-              showNotification('Locked PHC portal & signed out Incharge session.');
-            }}
-            className="p-2 text-slate-500 hover:text-rose-700 hover:bg-rose-50 rounded-xl border border-transparent hover:border-rose-200 transition-colors cursor-pointer"
-            title="Lock PHC & Sign Out"
-          >
-            <LogOut className="w-4 h-4" />
-          </button>
+              <button
+                type="button"
+                id="topbar-demo-access-btn"
+                onClick={() => openAuthModal('demo', selectedPHC)}
+                className="px-2.5 py-1.5 text-xs font-bold text-teal-900 bg-teal-50 hover:bg-teal-100 border border-teal-300 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
+                title="Open Demo Access (No Officer ID or password required)"
+              >
+                <Unlock className="w-3.5 h-3.5 text-teal-700" />
+                <span>Demo Access</span>
+              </button>
+
+              <button
+                type="button"
+                id="topbar-authorized-access-btn"
+                onClick={() => openAuthModal('officer', selectedPHC)}
+                className="px-3 py-1.5 text-xs font-bold text-white bg-teal-700 hover:bg-teal-800 rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
+                title="Authenticate for Admin / Authorized Access to modify supply-chain data"
+              >
+                <KeyRound className="w-3.5 h-3.5 text-teal-200" />
+                <span>{t.common.adminAuthorizedAccess}</span>
+              </button>
+            </>
+          ) : (
+            <>
+              {(inchargeSession.loginMode === 'DEMO_ACCESS' || inchargeSession.isDemoAccount) && (
+                <span
+                  id="topbar-demo-account-badge"
+                  className="hidden xl:inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-50 border border-amber-300 text-amber-950 text-[10px] font-mono font-bold shrink-0"
+                  title="Demo Medical Officer Account — Synthetic Data"
+                >
+                  <span>DEMO ACCOUNT · SYNTHETIC DATA</span>
+                </span>
+              )}
+
+              <button
+                type="button"
+                onClick={() => openAuthModal('signin', selectedPHC)}
+                className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200 transition-colors cursor-pointer"
+                title="View Authenticated PHC In-Charge Session Profile"
+              >
+                <div className="w-7 h-7 rounded-lg bg-linear-to-br from-teal-600 to-emerald-600 text-white flex items-center justify-center text-xs font-bold shrink-0">
+                  {(
+                    inchargeSession.officerName ||
+                    inchargeSession.inchargeName ||
+                    selectedPHC.medicalOfficerInCharge ||
+                    'M'
+                  )[0].toUpperCase()}
+                </div>
+                <div className="hidden sm:block text-left min-w-0 max-w-[155px]">
+                  <div className="text-[11px] font-bold text-slate-900 truncate leading-tight">
+                    {inchargeSession.officerName ||
+                      inchargeSession.inchargeName ||
+                      selectedPHC.medicalOfficerInCharge}
+                  </div>
+                  <div className="text-[10px] font-mono text-teal-800 font-semibold truncate leading-tight">
+                    {inchargeSession.loginMode === 'DEMO_ACCESS' || inchargeSession.isDemoAccount
+                      ? 'DEMO · '
+                      : ''}
+                    ID: {inchargeSession.officerId} ·{' '}
+                    {selectedPHC.name.replace('Primary Health Centre', 'PHC')}
+                  </div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                id="topbar-logout-btn"
+                onClick={() => {
+                  signOutIncharge();
+                  if (currentUser) {
+                    signOutUser();
+                  }
+                  showNotification('Signed out of authorized session. Returned to DEMO / READ-ONLY MODE.');
+                }}
+                className="px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:text-rose-700 hover:bg-rose-50 rounded-xl border border-slate-200 hover:border-rose-200 transition-colors flex items-center gap-1.5 cursor-pointer"
+                title="Logout PHC In-Charge Session"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span className="hidden md:inline">Logout</span>
+              </button>
+            </>
+          )}
         </div>
       </div>
     </header>

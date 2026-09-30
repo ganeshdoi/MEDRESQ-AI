@@ -20,6 +20,7 @@ import { MapNetworkView } from './components/views/MapNetwork/MapNetworkView.tsx
 import { GeminiChatbot } from './components/views/GeminiChatbot.tsx';
 import { NationalPHCDirectory } from './components/views/NationalPHCDirectory.tsx';
 import { AutonomousAgentsHub } from './components/views/AutonomousAgentsHub.tsx';
+import { OfflineQueueViewer } from './components/views/OfflineQueueViewer.tsx';
 
 import { X, CheckCircle, WifiOff, Wifi, RefreshCw, AlertTriangle, Plus, Sliders, KeyRound, ShieldCheck } from 'lucide-react';
 import { evaluateMedicineThresholdAndReplenishment } from './utils/inventoryForecast.ts';
@@ -53,34 +54,15 @@ const MainLayout: React.FC = () => {
     isAuthModalOpen,
     authModalTab,
     pendingPHCToUnlock,
+    pendingActionLabel,
     openAuthModal,
     closeAuthModal,
     authenticatePHCIncharge,
+    signOutIncharge,
     signInWithGoogle,
     isAuthLoading,
     showNotification
   } = useApp();
-
-  // If no PHC Incharge is signed in yet, show the friendly PHC Incharge Login / Sign In / Sign Up Portal
-  if (!inchargeSession) {
-    return (
-      <PHCAuthPortal
-        facilities={facilities}
-        selectedPHC={selectedPHC}
-        isModalMode={false}
-        initialTab="signin"
-        onAuthenticated={(session, chosenPHC) => {
-          authenticatePHCIncharge(session, chosenPHC);
-          showNotification(
-            `[DEMO ONLY] Signed in to simulated session for ${chosenPHC.name} (${chosenPHC.district}) as ${session.inchargeName}.`
-          );
-        }}
-        onGoogleSignIn={signInWithGoogle}
-        isAuthLoading={isAuthLoading}
-        activeSession={inchargeSession}
-      />
-    );
-  }
 
   const pendingOfflineRecordsCount = offlineQueue.filter((i) => i.status !== 'SYNCED').length;
   const syncedOfflineRecordsCount = offlineQueue.filter((i) => i.status === 'SYNCED').length;
@@ -110,8 +92,25 @@ const MainLayout: React.FC = () => {
         return <RecordsDataCapture />;
       case 'alerts':
         return <AlertCentre />;
+      case 'attendance':
+      case 'workforce':
+        return <WorkforceIntelligence />;
       case 'analytics':
         return <AnalyticsReports />;
+      case 'offline-queue':
+        return <OfflineQueueViewer />;
+      case 'voice':
+        return <VoiceEntry />;
+      case 'capacity':
+        return <FacilityCapacity />;
+      case 'integrations':
+        return <IntegrationsView />;
+      case 'settings':
+        return <SettingsView />;
+      case 'chatbot':
+        return <GeminiChatbot />;
+      case 'agents':
+        return <AutonomousAgentsHub />;
       default:
         return <HomeOverview />;
     }
@@ -388,19 +387,41 @@ const MainLayout: React.FC = () => {
         <footer className="bg-white/95 backdrop-blur-xs border-t border-slate-200/80 px-4 sm:px-6 py-2.5 text-xs text-slate-500 flex flex-col sm:flex-row items-center justify-between gap-2 shrink-0">
           <div className="flex items-center gap-2 text-slate-600">
             <ShieldCheck className="w-3.5 h-3.5 text-teal-600 shrink-0" />
-            <span>
-              <strong className="font-semibold text-slate-800">MEDRESQ PHC PORTAL</strong> · Signed in as{' '}
-              <strong className="text-teal-800">{inchargeSession.inchargeName}</strong> ({selectedPHC.name})
-            </span>
+            {inchargeSession ? (
+              <span>
+                <strong className="font-semibold text-slate-800">MEDRESQ PHC PORTAL</strong> · Signed in as{' '}
+                <strong className="text-teal-800">
+                  {inchargeSession.officerName || inchargeSession.inchargeName}
+                </strong>{' '}
+                (<span className="font-mono">{inchargeSession.officerId}</span> · {selectedPHC.name})
+                {(inchargeSession.loginMode === 'DEMO_ACCESS' || inchargeSession.isDemoAccount) && (
+                  <span className="ml-2 font-mono font-bold text-amber-900 bg-amber-100 border border-amber-300 px-1.5 py-0.5 rounded text-[10px]">
+                    DEMO ACCOUNT · SYNTHETIC DATA
+                  </span>
+                )}
+              </span>
+            ) : (
+              <span>
+                <strong className="font-semibold text-slate-800">MEDRESQ PHC PORTAL</strong> ·{' '}
+                <span className="font-mono font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
+                  DEMO / READ-ONLY MODE
+                </span>{' '}
+                · Viewing {selectedPHC.name}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-3 text-xs">
             <button
               type="button"
-              onClick={() => openAuthModal('directory')}
+              onClick={() => openAuthModal('signin', selectedPHC)}
               className="text-teal-700 hover:text-teal-900 font-semibold flex items-center gap-1 transition-colors cursor-pointer"
             >
               <KeyRound className="w-3.5 h-3.5" />
-              <span>PHC Incharge Directory (Demo)</span>
+              <span>
+                {inchargeSession
+                  ? `Session Profile (${inchargeSession.officerId})`
+                  : 'Admin / Authorized Access'}
+              </span>
             </button>
             <span aria-hidden="true">·</span>
             <button
@@ -417,21 +438,26 @@ const MainLayout: React.FC = () => {
           </div>
         </footer>
 
-        {/* PHC-Specific Incharge Password & Sign-In / Sign-Up Modal */}
+        {/* Authorized Access / Officer Session Modal */}
         {isAuthModalOpen && (
           <PHCAuthPortal
             facilities={facilities}
             selectedPHC={selectedPHC}
             targetPHCToUnlock={pendingPHCToUnlock}
+            pendingActionLabel={pendingActionLabel}
             isModalMode={true}
             initialTab={authModalTab}
             onAuthenticated={(session, chosenPHC) => {
               authenticatePHCIncharge(session, chosenPHC);
               showNotification(
-                `[DEMO ONLY] Switched simulated session to ${chosenPHC.name} (${chosenPHC.district}) as ${session.inchargeName}.`
+                `Authenticated Officer ${session.officerId} (${session.officerName || session.inchargeName}) — Authorized access unlocked.`
               );
             }}
             onCloseModal={closeAuthModal}
+            onLogout={() => {
+              signOutIncharge();
+              showNotification('Signed out of authorized session. Returned to DEMO / READ-ONLY MODE.');
+            }}
             onGoogleSignIn={signInWithGoogle}
             isAuthLoading={isAuthLoading}
             activeSession={inchargeSession}

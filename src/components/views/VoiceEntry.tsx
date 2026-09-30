@@ -31,18 +31,32 @@ import { VoiceClinicalGuideModal } from './VoiceClinicalGuideModal.tsx';
 import { VoiceCommandsOnboardingModal } from './VoiceCommandsOnboardingModal.tsx';
 import { RecentVoiceCommandsFloat } from './RecentVoiceCommandsFloat.tsx';
 import { resolveMedicineMatch } from '../../utils/medicineMatcher.ts';
+import {
+  resolveVoiceLanguageConfig,
+  getVoiceBcp47Locale,
+  parsePhysicalRegisterVoiceCommand,
+  type RegisterVoiceBcp47Locale
+} from '../../utils/registerVoiceCommandParser.ts';
 
 const RECENT_COMMANDS_STORAGE_KEY = 'medresq_recent_voice_commands_v1';
 
 const LANGUAGE_LABELS: Record<string, string> = {
-  hinglish: 'Hinglish',
-  hindi: 'Hindi (हिन्दी)',
+  'en-IN': 'English (en-IN)',
+  'hi-IN': 'Hindi (हिन्दी · hi-IN)',
+  'ta-IN': 'Tamil (தமிழ் · ta-IN)',
+  'te-IN': 'Telugu (తెలుగు · te-IN)',
+  en: 'English (en-IN)',
+  hi: 'Hindi (हिन्दी · hi-IN)',
+  ta: 'Tamil (தமிழ் · ta-IN)',
+  te: 'Telugu (తెలుగు · te-IN)',
+  hinglish: 'Hinglish (hi-IN)',
+  hindi: 'Hindi (हिन्दी · hi-IN)',
   marwari: 'Marwari (मारवाड़ी)',
-  tamil: 'Tamil (தமிழ்)',
-  telugu: 'Telugu (తెలుగు)',
+  tamil: 'Tamil (தமிழ் · ta-IN)',
+  telugu: 'Telugu (తెలుగు · te-IN)',
   bengali: 'Bengali (বাংলা)',
   marathi: 'Marathi (मराठी)',
-  english: 'English'
+  english: 'English (en-IN)'
 };
 
 const INITIAL_RECENT_COMMANDS: RecentVoiceCommand[] = [
@@ -98,11 +112,21 @@ export const VoiceEntry: React.FC = () => {
     selectedPHC,
     transcribeAudio,
     isTranscribing,
-    currentUser
+    currentUser,
+    language,
+    setLanguage
   } = useApp();
 
   const [isRecording, setIsRecording] = useState(false);
-  const [selectedLanguage, setSelectedLanguage] = useState<string>('hinglish');
+  const [selectedLanguage, setSelectedLanguage] = useState<RegisterVoiceBcp47Locale | string>(() =>
+    getVoiceBcp47Locale(language)
+  );
+
+  useEffect(() => {
+    if (language) {
+      setSelectedLanguage(getVoiceBcp47Locale(language));
+    }
+  }, [language]);
   const [transcript, setTranscript] = useState('Aaj ORS ke 35 packets use hue.');
   const [isProcessing, setIsProcessing] = useState(false);
   const [modelUsed, setModelUsed] = useState('gemini-3.5-transcribe + Vertex AI Gemini 3.8 Flash');
@@ -207,9 +231,54 @@ export const VoiceEntry: React.FC = () => {
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const speechRecognitionRef = useRef<any>(null);
+  const browserInterimTranscriptRef = useRef<string>('');
 
-  // Start real microphone capture using MediaRecorder
-  const startRecording = async () => {
+  // Start hybrid Browser SpeechRecognition + MediaRecorder capture with automatic Gemini Transcription API fallback
+  const startRecording = async (langParam?: RegisterVoiceBcp47Locale | string) => {
+    const activeLangConfig = resolveVoiceLanguageConfig(langParam || selectedLanguage || language);
+    const targetLocale: RegisterVoiceBcp47Locale = activeLangConfig.locale;
+    browserInterimTranscriptRef.current = '';
+    let speechErrorOccurred = false;
+
+    const SpeechRecognitionAPI =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (SpeechRecognitionAPI) {
+      try {
+        const recognition = new SpeechRecognitionAPI();
+        recognition.lang = targetLocale; // en-IN, hi-IN, ta-IN, or te-IN
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.maxAlternatives = 3;
+
+        recognition.onresult = (event: any) => {
+          let combined = '';
+          for (let i = 0; i < event.results.length; i++) {
+            combined += event.results[i][0].transcript + ' ';
+          }
+          const cleanInterim = combined.trim();
+          if (cleanInterim) {
+            browserInterimTranscriptRef.current = cleanInterim;
+            setTranscript(cleanInterim);
+          }
+        };
+
+        recognition.onerror = (event: any) => {
+          console.warn(`SpeechRecognition (${targetLocale}) notice:`, event?.error);
+          speechErrorOccurred = true;
+        };
+
+        recognition.start();
+        speechRecognitionRef.current = recognition;
+      } catch (err) {
+        console.warn('SpeechRecognition start failed, routing to Gemini audio fallback:', err);
+        speechErrorOccurred = true;
+      }
+    } else {
+      speechErrorOccurred = true;
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       audioChunksRef.current = [];
@@ -223,33 +292,67 @@ export const VoiceEntry: React.FC = () => {
       };
 
       recorder.onstop = async () => {
+        if (speechRecognitionRef.current) {
+          try {
+            speechRecognitionRef.current.stop();
+          } catch {
+            // ignore
+          }
+        }
         const audioBlob = new Blob(audioChunksRef.current, {
           type: recorder.mimeType || 'audio/webm'
         });
         stream.getTracks().forEach(track => track.stop());
 
-        showNotification('Transcribing audio via gemini-3.5-transcribe...');
-        const transcribedText = await transcribeAudio(audioBlob);
-        if (transcribedText) {
-          setTranscript(transcribedText);
-          setModelUsed('gemini-3.5-transcribe');
-          await processSpokenText(transcribedText);
+        const browserCapturedText = browserInterimTranscriptRef.current.trim();
+        const browserPreviewParse = browserCapturedText
+          ? parsePhysicalRegisterVoiceCommand(browserCapturedText, targetLocale, medicines)
+          : null;
+
+        // If Browser SpeechRecognition succeeded with a valid recognized command in the target language
+        if (
+          !speechErrorOccurred &&
+          browserCapturedText.length > 1 &&
+          browserPreviewParse &&
+          browserPreviewParse.action !== 'UNKNOWN' &&
+          !browserPreviewParse.validationError
+        ) {
+          setTranscript(browserCapturedText);
+          setModelUsed(`Browser SpeechRecognition (${targetLocale})`);
+          await processSpokenText(browserCapturedText, targetLocale);
+          return;
+        }
+
+        // Automatic Fallback: Route speech audio to server-side Gemini transcription API
+        showNotification(`Transcribing audio (${LANGUAGE_LABELS[targetLocale] || targetLocale}) via Gemini API...`);
+        const transcribedText = await transcribeAudio(audioBlob, targetLocale, browserCapturedText);
+        const finalTranscript = (transcribedText || browserCapturedText).trim();
+        if (finalTranscript) {
+          setTranscript(finalTranscript);
+          setModelUsed(`gemini-3.5-transcribe (${targetLocale})`);
+          await processSpokenText(finalTranscript, targetLocale);
         }
       };
 
       recorder.start();
       setIsRecording(true);
       setSuccessSaved(false);
-      showNotification('Recording microphone input... Speak clearly in Hindi, Hinglish, or English.');
+      showNotification(`Recording microphone input (${targetLocale})... Speak clearly in ${activeLangConfig.label}.`);
     } catch (err) {
       console.error('Microphone error:', err);
       showNotification('Microphone access unavailable or denied. Using sample scenario.');
-      // fallback simulation
       setIsRecording(false);
     }
   };
 
   const stopRecording = () => {
+    if (speechRecognitionRef.current) {
+      try {
+        speechRecognitionRef.current.stop();
+      } catch {
+        // ignore
+      }
+    }
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
@@ -260,12 +363,12 @@ export const VoiceEntry: React.FC = () => {
     if (isRecording) {
       stopRecording();
     } else {
-      startRecording();
+      void startRecording(selectedLanguage);
     }
   };
 
   const processSpokenText = async (text: string, langOverride?: string) => {
-    const activeLang = langOverride || selectedLanguage;
+    const activeLang = getVoiceBcp47Locale(langOverride || selectedLanguage || language);
     setIsProcessing(true);
     setSuccessSaved(false);
 
@@ -276,6 +379,7 @@ export const VoiceEntry: React.FC = () => {
         body: JSON.stringify({
           transcript: text,
           language: activeLang,
+          locale: activeLang,
           sttEngine: 'gemini-3.5-transcribe'
         })
       });
@@ -291,24 +395,31 @@ export const VoiceEntry: React.FC = () => {
         throw new Error('API processing error');
       }
     } catch {
+      const activeLangConfig = resolveVoiceLanguageConfig(activeLang);
+      const localParsed = parsePhysicalRegisterVoiceCommand(text, activeLang, medicines);
       const fallbackData: VoiceEntryResult = {
         rawTranscript: text,
-        languageDetected: LANGUAGE_LABELS[activeLang] || 'Hinglish / Hindi',
-        englishTranslation: 'Consumption of 35 units of Oral Rehydration Salts (ORS) Sachets 20.5g at OPD Dispensary.',
-        hindiTranslation: 'ओपीडी डिस्पेंसरी में ओआरएस के 35 पैकेट का वितरण दर्ज किया गया।',
-        engineUsed: 'Google Cloud Vertex AI & Gemini 3.8 Flash NLU',
+        languageDetected: LANGUAGE_LABELS[activeLang] || `${activeLangConfig.label} (${activeLang})`,
+        englishTranslation: localParsed.englishSummary,
+        hindiTranslation: localParsed.nativeConfirmation,
+        engineUsed: `Google Cloud Vertex AI & Gemini 3.8 Flash NLU (${activeLang})`,
         sttEngine: 'gemini-3.5-transcribe',
-        parsedMedicine: 'Oral Rehydration Salts (ORS) Sachets 20.5g',
-        parsedTransaction: 'Consumption',
-        parsedQuantity: 35,
-        parsedDate: '2026-09-22',
-        confidence: 0.94,
-        notes: 'Routine dispensary consumption'
+        parsedMedicine: localParsed.medicineName || 'Oral Rehydration Salts (ORS) Sachets 20.5g',
+        parsedTransaction:
+          localParsed.action === 'ADD'
+            ? 'Receipt'
+            : localParsed.action === 'SEARCH'
+            ? 'Check Stock'
+            : 'Consumption',
+        parsedQuantity: localParsed.quantity ?? 35,
+        parsedDate: '2026-09-28',
+        confidence: localParsed.confidence || 0.94,
+        notes: localParsed.englishSummary
       };
       setParsedResult(fallbackData);
-      setEditMedicine('Oral Rehydration Salts (ORS) Sachets 20.5g');
-      setEditQuantity(35);
-      setEditTransaction('Consumption');
+      setEditMedicine(fallbackData.parsedMedicine);
+      setEditQuantity(fallbackData.parsedQuantity);
+      setEditTransaction(fallbackData.parsedTransaction);
       recordVoiceCommandToHistory(text, activeLang, fallbackData, false);
     }
 
@@ -455,13 +566,13 @@ export const VoiceEntry: React.FC = () => {
   };
 
   const sampleVoicePhrases = [
-    { text: 'Register 60 packets of ORS batch ORS-2609 dispensed at OPD today.', lang: 'english', langBadge: 'Register Entry', desc: 'Log handwritten register line by voice' },
-    { text: 'Add PHC data 240 OPD patients 16 occupied beds and 80 bottles Normal Saline received.', lang: 'english', langBadge: 'Add PHC Data', desc: 'Update PHC OPD footfall, beds & stock' },
-    { text: 'Check stock for Oral Rehydration Salts packets in main store.', lang: 'english', langBadge: 'Check Stock', desc: 'Query live FEFO stock & days of cover' },
-    { text: 'Add replenishment order for 400 packets of ORS from district warehouse.', lang: 'english', langBadge: 'Add Order', desc: 'Create RMSCL replenishment indent' },
-    { text: 'Report shortage of Polyvalent Anti-Snake Venom vials at emergency triage.', lang: 'english', langBadge: 'Report Shortage', desc: 'Trigger critical stockout threshold alert' },
-    { text: 'Aaj ORS ke 35 packets use hue.', lang: 'hinglish', langBadge: 'Hinglish', desc: 'Routine consumption in Hindi/Hinglish' },
-    { text: 'आपातकालीन वार्ड में पैरासिटामोल 500mg की 120 गोलियां तुरंत दी गईं।', lang: 'hindi', langBadge: 'Hindi (हिन्दी)', desc: 'Devanagari emergency ward dispensing' }
+    { text: 'Register 60 packets of ORS batch ORS-2609 dispensed at OPD today.', lang: 'en-IN', langBadge: 'English (en-IN)', desc: 'Log handwritten register line by voice' },
+    { text: 'पैरासिटामोल 500mg की 20 टैबलेट जोड़ो।', lang: 'hi-IN', langBadge: 'Hindi (hi-IN)', desc: 'Hindi Devanagari register addition' },
+    { text: 'பாராசிட்டமால் 20 சேர்', lang: 'ta-IN', langBadge: 'Tamil (ta-IN)', desc: 'Tamil voice register addition' },
+    { text: 'పారాసిటమాల్ 20 జోడించు', lang: 'te-IN', langBadge: 'Telugu (te-IN)', desc: 'Telugu voice register addition' },
+    { text: 'Check stock for Oral Rehydration Salts packets in main store.', lang: 'en-IN', langBadge: 'Check Stock (en-IN)', desc: 'Query live FEFO stock & days of cover' },
+    { text: 'Add replenishment order for 400 packets of ORS from district warehouse.', lang: 'en-IN', langBadge: 'Add Order (en-IN)', desc: 'Create RMSCL replenishment indent' },
+    { text: 'आपातकालीन वार्ड में पैरासिटामोल 500mg की 120 गोलियां तुरंत दी गईं।', lang: 'hi-IN', langBadge: 'Hindi (hi-IN)', desc: 'Devanagari emergency ward dispensing' }
   ];
 
   const matchedPreviewMedicine = parsedResult
@@ -541,8 +652,8 @@ export const VoiceEntry: React.FC = () => {
                 onClick={() => {
                   const cmd = 'Check stock for Oral Rehydration Salts packets in main store.';
                   setTranscript(cmd);
-                  setSelectedLanguage('english');
-                  processSpokenText(cmd, 'english');
+                  setSelectedLanguage('en-IN');
+                  processSpokenText(cmd, 'en-IN');
                 }}
                 className="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-emerald-50 text-slate-800 hover:text-emerald-800 border border-slate-200 hover:border-emerald-300 text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
               >
@@ -555,8 +666,8 @@ export const VoiceEntry: React.FC = () => {
                 onClick={() => {
                   const cmd = 'Add replenishment order for 400 packets of ORS from district warehouse.';
                   setTranscript(cmd);
-                  setSelectedLanguage('english');
-                  processSpokenText(cmd, 'english');
+                  setSelectedLanguage('en-IN');
+                  processSpokenText(cmd, 'en-IN');
                 }}
                 className="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-emerald-50 text-slate-800 hover:text-emerald-800 border border-slate-200 hover:border-emerald-300 text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
               >
@@ -569,8 +680,8 @@ export const VoiceEntry: React.FC = () => {
                 onClick={() => {
                   const cmd = 'Report shortage of Polyvalent Anti-Snake Venom vials at emergency triage.';
                   setTranscript(cmd);
-                  setSelectedLanguage('english');
-                  processSpokenText(cmd, 'english');
+                  setSelectedLanguage('en-IN');
+                  processSpokenText(cmd, 'en-IN');
                 }}
                 className="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-emerald-50 text-slate-800 hover:text-emerald-800 border border-slate-200 hover:border-emerald-300 text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
               >
@@ -583,8 +694,8 @@ export const VoiceEntry: React.FC = () => {
                 onClick={() => {
                   const cmd = 'Register 60 packets of ORS batch ORS-2609 dispensed at OPD today.';
                   setTranscript(cmd);
-                  setSelectedLanguage('english');
-                  processSpokenText(cmd, 'english');
+                  setSelectedLanguage('en-IN');
+                  processSpokenText(cmd, 'en-IN');
                 }}
                 className="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-emerald-50 text-slate-800 hover:text-emerald-800 border border-slate-200 hover:border-emerald-300 text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
               >
@@ -597,8 +708,8 @@ export const VoiceEntry: React.FC = () => {
                 onClick={() => {
                   const cmd = 'Add PHC data 240 OPD patients 16 occupied beds and 80 bottles Normal Saline received.';
                   setTranscript(cmd);
-                  setSelectedLanguage('english');
-                  processSpokenText(cmd, 'english');
+                  setSelectedLanguage('en-IN');
+                  processSpokenText(cmd, 'en-IN');
                 }}
                 className="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-emerald-50 text-slate-800 hover:text-emerald-800 border border-slate-200 hover:border-emerald-300 text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
               >
@@ -631,18 +742,18 @@ export const VoiceEntry: React.FC = () => {
               <div className="flex items-center gap-1.5 text-xs text-slate-600">
                 <Languages className="w-3.5 h-3.5 text-slate-400" />
                 <select
-                  value={selectedLanguage}
-                  onChange={(e) => setSelectedLanguage(e.target.value)}
+                  value={getVoiceBcp47Locale(selectedLanguage)}
+                  onChange={(e) => {
+                    const nextLocale = getVoiceBcp47Locale(e.target.value);
+                    setSelectedLanguage(nextLocale);
+                    setLanguage(resolveVoiceLanguageConfig(nextLocale).code);
+                  }}
                   className="bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer shadow-2xs"
                 >
-                  <option value="hinglish">Hinglish (Colloquial)</option>
-                  <option value="hindi">Hindi (हिन्दी)</option>
-                  <option value="marwari">Rajasthani / Marwari (मारवाड़ी)</option>
-                  <option value="tamil">Tamil (தமிழ்)</option>
-                  <option value="telugu">Telugu (తెలుగు)</option>
-                  <option value="bengali">Bengali (বাংলা)</option>
-                  <option value="marathi">Marathi (मराठी)</option>
-                  <option value="english">English (Indian)</option>
+                  <option value="en-IN">English — en-IN</option>
+                  <option value="hi-IN">Hindi (हिन्दी) — hi-IN</option>
+                  <option value="ta-IN">Tamil (தமிழ்) — ta-IN</option>
+                  <option value="te-IN">Telugu (తెలుగు) — te-IN</option>
                 </select>
               </div>
             </div>
@@ -710,7 +821,7 @@ export const VoiceEntry: React.FC = () => {
                     : 'Click microphone to record voice entry'}
                 </span>
                 <span className="text-[11px] text-slate-500 mt-0.5 block font-mono">
-                  Engine: <strong>gemini-3.5-transcribe</strong> (Hindi, English, Hinglish)
+                  Engine: <strong>gemini-3.5-transcribe</strong> ({selectedLanguage} · English, Hindi, Tamil, Telugu)
                 </span>
 
                 {/* Interactive Audio Tooltip & Tips Popover */}
@@ -803,11 +914,12 @@ export const VoiceEntry: React.FC = () => {
               activeCommandId={activeCommandId}
               isProcessing={isProcessing || isTranscribing}
               onRetrigger={(cmd) => {
+                const mappedLocale = getVoiceBcp47Locale(cmd.language);
                 setTranscript(cmd.transcript);
-                setSelectedLanguage(cmd.language);
-                setModelUsed('gemini-3.5-transcribe + Vertex AI Gemini 3.8 Flash');
+                setSelectedLanguage(mappedLocale);
+                setModelUsed(`gemini-3.5-transcribe (${mappedLocale}) + Vertex AI Gemini 3.8 Flash`);
                 setActiveCommandId(cmd.id);
-                processSpokenText(cmd.transcript, cmd.language);
+                processSpokenText(cmd.transcript, mappedLocale);
                 showNotification(`Re-triggered voice command: "${cmd.transcript}"`);
               }}
               onClearHistory={() => {
@@ -832,10 +944,11 @@ export const VoiceEntry: React.FC = () => {
                     key={idx}
                     type="button"
                     onClick={() => {
+                      const mappedLocale = getVoiceBcp47Locale(phrase.lang);
                       setTranscript(phrase.text);
-                      setSelectedLanguage(phrase.lang);
-                      setModelUsed('gemini-3.5-transcribe + Vertex AI Gemini 3.8 Flash');
-                      processSpokenText(phrase.text, phrase.lang);
+                      setSelectedLanguage(mappedLocale);
+                      setModelUsed(`gemini-3.5-transcribe (${mappedLocale}) + Vertex AI Gemini 3.8 Flash`);
+                      processSpokenText(phrase.text, mappedLocale);
                     }}
                     className="w-full text-left p-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs text-slate-800 transition-colors flex items-center justify-between shadow-2xs group cursor-pointer"
                   >
@@ -1088,11 +1201,12 @@ export const VoiceEntry: React.FC = () => {
         isOpen={isGuideOpen}
         onClose={() => setIsGuideOpen(false)}
         onSelectExample={(text, lang) => {
+          const mappedLocale = getVoiceBcp47Locale(lang);
           setTranscript(text);
-          setSelectedLanguage(lang);
-          setModelUsed('clinical-example-preset');
-          processSpokenText(text, lang);
-          showNotification(`Applied clinical example: "${text}"`);
+          setSelectedLanguage(mappedLocale);
+          setModelUsed(`clinical-example-preset (${mappedLocale})`);
+          processSpokenText(text, mappedLocale);
+          showNotification(`Applied clinical example (${mappedLocale}): "${text}"`);
         }}
       />
 
@@ -1101,11 +1215,12 @@ export const VoiceEntry: React.FC = () => {
         isOpen={isOnboardingOpen}
         onClose={() => setIsOnboardingOpen(false)}
         onExecuteCommand={(spokenText, lang) => {
+          const mappedLocale = getVoiceBcp47Locale(lang);
           setTranscript(spokenText);
-          setSelectedLanguage(lang);
-          setModelUsed('gemini-3.5-transcribe + Vertex AI Gemini 3.8 Flash');
-          processSpokenText(spokenText, lang);
-          showNotification(`Executed voice command: "${spokenText}"`);
+          setSelectedLanguage(mappedLocale);
+          setModelUsed(`gemini-3.5-transcribe (${mappedLocale}) + Vertex AI Gemini 3.8 Flash`);
+          processSpokenText(spokenText, mappedLocale);
+          showNotification(`Executed voice command (${mappedLocale}): "${spokenText}"`);
         }}
       />
     </div>

@@ -592,16 +592,18 @@ const BASE_NETWORK_FACILITIES: NetworkFacility[] = [
   }
 ];
 
-// Automatically integrate ALL PHCs from INDIA_PHC_DIRECTORY so every PHC across India is plotted on the map
-const existingIds = new Set(BASE_NETWORK_FACILITIES.map((f) => f.id));
+// Build RAW_NETWORK_FACILITIES strictly from INDIA_PHC_DIRECTORY (96 total demo PHC profiles, 59 in Rajasthan)
+// while preserving detailed metadata/coordinates from BASE_NETWORK_FACILITIES where matched.
+const baseFacilityById = new Map(BASE_NETWORK_FACILITIES.map((f) => [f.id, f]));
 
-const DIRECTORY_MAPPED_FACILITIES: NetworkFacility[] = INDIA_PHC_DIRECTORY.filter(
-  (phc) => !existingIds.has(phc.id)
-).map((phc, idx) => {
-  const coords = PHC_GEO_COORDINATES[phc.id] || {
-    lat: 26.5 + (idx % 7) * 0.12,
-    lng: 73.0 + (idx % 5) * 0.15
-  };
+export const RAW_NETWORK_FACILITIES: NetworkFacility[] = INDIA_PHC_DIRECTORY.map((phc, idx) => {
+  const baseMatch = baseFacilityById.get(phc.id);
+  const coords = PHC_GEO_COORDINATES[phc.id] ||
+    (baseMatch ? { lat: baseMatch.latitude, lng: baseMatch.longitude } : {
+      lat: 26.5 + (idx % 7) * 0.12,
+      lng: 73.0 + (idx % 5) * 0.15
+    });
+
   const utilization =
     phc.sanctionedBeds > 0 ? Math.round((phc.occupiedBeds / phc.sanctionedBeds) * 100) : 60;
 
@@ -609,7 +611,11 @@ const DIRECTORY_MAPPED_FACILITIES: NetworkFacility[] = INDIA_PHC_DIRECTORY.filte
   const isModOccupancy = !isHighOccupancy && utilization >= 68;
 
   const staffSanctioned = phc.type === '24x7 PHC' ? 16 : 12;
-  const staffPresent = isHighOccupancy ? staffSanctioned - 4 : isModOccupancy ? staffSanctioned - 2 : staffSanctioned - 1;
+  const staffPresent = isHighOccupancy
+    ? staffSanctioned - 4
+    : isModOccupancy
+    ? staffSanctioned - 2
+    : staffSanctioned - 1;
 
   return {
     id: phc.id,
@@ -625,37 +631,42 @@ const DIRECTORY_MAPPED_FACILITIES: NetworkFacility[] = INDIA_PHC_DIRECTORY.filte
     medicalOfficerInCharge: phc.medicalOfficerInCharge,
     sanctionedBeds: phc.sanctionedBeds,
     occupiedBeds: phc.occupiedBeds,
-    capacityUtilization: utilization,
-    operationalRisk: isHighOccupancy ? 'CRITICAL' : isModOccupancy ? 'MODERATE' : 'LOW',
+    capacityUtilization: baseMatch ? baseMatch.capacityUtilization : utilization,
+    operationalRisk: baseMatch
+      ? baseMatch.operationalRisk
+      : isHighOccupancy
+      ? 'CRITICAL'
+      : isModOccupancy
+      ? 'MODERATE'
+      : 'LOW',
     medicineRisk: 'UNKNOWN',
-    workforceStatus: isHighOccupancy ? 'SHORTAGE' : isModOccupancy ? 'MODERATE' : 'OPTIMAL',
-    preparednessStatus: isHighOccupancy ? 'ACTION_REQUIRED' : isModOccupancy ? 'ALERTED' : 'PREPARED',
-    staffPresentCount: staffPresent,
-    staffSanctionedCount: staffSanctioned,
-    coldChainTempC: Number((3.6 + (idx % 7) * 0.1).toFixed(1)),
+    workforceStatus: baseMatch
+      ? baseMatch.workforceStatus
+      : isHighOccupancy
+      ? 'SHORTAGE'
+      : isModOccupancy
+      ? 'MODERATE'
+      : 'OPTIMAL',
+    preparednessStatus: baseMatch
+      ? baseMatch.preparednessStatus
+      : isHighOccupancy
+      ? 'ACTION_REQUIRED'
+      : isModOccupancy
+      ? 'ALERTED'
+      : 'PREPARED',
+    staffPresentCount: baseMatch ? baseMatch.staffPresentCount : staffPresent,
+    staffSanctionedCount: baseMatch ? baseMatch.staffSanctionedCount : staffSanctioned,
+    coldChainTempC: baseMatch?.coldChainTempC ?? Number((3.6 + (idx % 7) * 0.1).toFixed(1)),
     keyShortages: [],
     keySurpluses: [],
-    notes: `${phc.type} serving ${phc.populationServed.toLocaleString()} citizens and ${phc.subCentresCovered} Sub-Centres/HWCs in ${phc.block} block, ${phc.district} (${phc.state}). Located ${phc.distanceKmFromDistrictHQ} km from District HQ.`
+    notes:
+      baseMatch?.notes ||
+      `${phc.type} serving ${phc.populationServed.toLocaleString()} citizens and ${phc.subCentresCovered} Sub-Centres/HWCs in ${phc.block} block, ${phc.district} (${phc.state}). Located ${phc.distanceKmFromDistrictHQ} km from District HQ.`
   };
 });
 
 /**
- * Raw facility metadata with static shortages/surpluses cleared so status is always calculated
- * from the facility-to-inventory mapping (or marked UNKNOWN if unmatched).
- */
-export const RAW_NETWORK_FACILITIES: NetworkFacility[] = [
-  ...BASE_NETWORK_FACILITIES.map((f) => ({
-    ...f,
-    medicineRisk: 'UNKNOWN' as const,
-    keyShortages: [],
-    keySurpluses: []
-  })),
-  ...DIRECTORY_MAPPED_FACILITIES
-];
-
-/**
- * Builds the facility-to-inventory map using the existing INDIA_PHC_DIRECTORY -> generateEssentialMedicinesForPHC mapping.
- * Facilities not present in INDIA_PHC_DIRECTORY (e.g., Sub-Centres, CHCs, or Warehouses without a PHC ledger) remain unmapped.
+ * Builds the facility-to-inventory map using the canonical INDIA_PHC_DIRECTORY -> generateEssentialMedicinesForPHC mapping.
  */
 export function buildDefaultFacilityInventoryMap(
   activePHCId?: string,
@@ -692,8 +703,8 @@ export const ACTIVE_LOGISTICS_ROUTES: LogisticsTransitRoute[] = [
   {
     id: 'route-con-8841',
     consignmentId: 'CON-RJ-8841',
-    originFacilityId: 'rmscl-mandore',
-    originName: 'RMSCL Warehouse Mandore',
+    originFacilityId: 'phc-mandore',
+    originName: 'PHC Mandore (Nodal Reserve)',
     destinationFacilityId: 'phc-osian',
     destinationName: 'PHC Osian (24x7)',
     cargoDescription: '500 ORS Sachets, 150 Normal Saline (500ml), 50 Ringer Lactate, 2,000 Paracetamol',
@@ -704,7 +715,7 @@ export const ACTIVE_LOGISTICS_ROUTES: LogisticsTransitRoute[] = [
     progressPercent: 68,
     currentPosition: [26.612, 72.955], // On MDR-61 between Tinwari and Osian
     waypoints: [
-      [26.354, 73.042], // RMSCL Mandore
+      [26.354, 73.042], // Mandore
       [26.425, 73.012], // Mandore Exit
       [26.512, 72.918], // Tinwari Bypass
       [26.612, 72.955], // Current truck location
@@ -719,10 +730,10 @@ export const ACTIVE_LOGISTICS_ROUTES: LogisticsTransitRoute[] = [
   {
     id: 'route-con-8843',
     consignmentId: 'CON-RJ-8843',
-    originFacilityId: 'rmscl-mandore',
-    originName: 'RMSCL Warehouse Mandore',
-    destinationFacilityId: 'chc-baori',
-    destinationName: 'CHC Baori',
+    originFacilityId: 'phc-mandore',
+    originName: 'PHC Mandore (Nodal Reserve)',
+    destinationFacilityId: 'phc-bhopalgarh',
+    destinationName: 'PHC Bhopalgarh',
     cargoDescription: '1,200 IV Normal Saline, 400 Ringer Lactate, Routine Antibiotics Batch',
     totalUnits: 2400,
     vehicleNumber: 'RJ 19 GA 3190',
@@ -733,7 +744,7 @@ export const ACTIVE_LOGISTICS_ROUTES: LogisticsTransitRoute[] = [
     waypoints: [
       [26.354, 73.042],
       [26.448, 73.085],
-      [26.541, 73.125]
+      [26.654, 73.521]
     ],
     departureTime: '2026-09-22 09:15 IST',
     etaMinutes: 52,
@@ -744,20 +755,20 @@ export const ACTIVE_LOGISTICS_ROUTES: LogisticsTransitRoute[] = [
   {
     id: 'route-con-8845',
     consignmentId: 'CON-RJ-8845',
-    originFacilityId: 'depot-phalodi',
-    originName: 'Phalodi Emergency Buffer Depot',
-    destinationFacilityId: 'chc-phalodi',
-    destinationName: 'CHC Phalodi Hospital',
+    originFacilityId: 'phc-bap',
+    originName: 'PHC Bap Desert Frontier',
+    destinationFacilityId: 'phc-pokhran',
+    destinationName: 'PHC Pokhran Frontier',
     cargoDescription: '800 ORS Sachets, 250 IV Normal Saline, Heatwave Emergency Packets',
     totalUnits: 1350,
     vehicleNumber: 'RJ 43 GA 1120',
     driverName: 'Mukesh Solanki',
     driverContact: '+91 9414 773120',
     progressPercent: 88,
-    currentPosition: [27.133, 27.367],
+    currentPosition: [27.133, 72.167],
     waypoints: [
-      [27.131, 72.365],
-      [27.135, 72.369]
+      [27.375, 72.358],
+      [26.921, 71.918]
     ],
     departureTime: '2026-09-22 09:40 IST',
     etaMinutes: 12,
@@ -775,9 +786,9 @@ export const REDISTRIBUTION_MAP_LINKS: RedistributionLink[] = [
     medicineName: 'Oral Rehydration Salts (ORS) Sachets 20.5g',
     recommendedQuantity: 600,
     unit: 'Sachets',
-    distanceKm: 55,
-    estimatedTransitHours: 1.2,
-    status: 'PROPOSED',
+    distanceKm: 41,
+    estimatedTransitHours: 0.9,
+    status: 'PENDING_REVIEW',
     urgency: 'CRITICAL'
   },
   {
@@ -787,32 +798,32 @@ export const REDISTRIBUTION_MAP_LINKS: RedistributionLink[] = [
     medicineName: 'Normal Saline (0.9% NaCl) IV Infusion 500ml',
     recommendedQuantity: 100,
     unit: 'Bottles',
-    distanceKm: 55,
-    estimatedTransitHours: 1.2,
+    distanceKm: 41,
+    estimatedTransitHours: 0.9,
     status: 'PENDING_REVIEW',
     urgency: 'HIGH'
   },
   {
-    id: 'link-baori-osian-rl',
-    sourceFacilityId: 'chc-baori',
+    id: 'link-bhopalgarh-osian-rl',
+    sourceFacilityId: 'phc-bhopalgarh',
     destinationFacilityId: 'phc-osian',
     medicineName: 'Ringer Lactate Injection 500ml',
     recommendedQuantity: 80,
     unit: 'Bottles',
-    distanceKm: 42,
-    estimatedTransitHours: 0.9,
-    status: 'PROPOSED',
+    distanceKm: 62,
+    estimatedTransitHours: 1.2,
+    status: 'PENDING_REVIEW',
     urgency: 'MODERATE'
   },
   {
-    id: 'link-osian-khetasar-ors',
-    sourceFacilityId: 'phc-osian',
-    destinationFacilityId: 'hwc-khetasar',
+    id: 'link-tinwari-osian-ors',
+    sourceFacilityId: 'phc-tinwari',
+    destinationFacilityId: 'phc-osian',
     medicineName: 'Oral Rehydration Salts (ORS) Sachets 20.5g',
-    recommendedQuantity: 50,
+    recommendedQuantity: 250,
     unit: 'Sachets',
-    distanceKm: 11.2,
-    estimatedTransitHours: 0.4,
+    distanceKm: 24,
+    estimatedTransitHours: 0.5,
     status: 'PENDING_REVIEW',
     urgency: 'HIGH'
   }

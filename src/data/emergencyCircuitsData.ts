@@ -6,9 +6,9 @@ export const EMERGENCY_CIRCUITS_PRESETS: EmergencyCircuitPlan[] = [
     title: 'Monsoon Antivenom & Cold-Chain Rapid Circuit',
     description: 'High-priority distribution of Anti-Snake Venom (ASV) and cold-chain temperature-controlled vials to rural PHCs in snakebite alert zones.',
     category: 'SUPPLY_DISTRIBUTION',
-    originId: 'rmscl-mandore',
+    originId: 'phc-mandore',
     waypointIds: ['phc-balesar', 'phc-tinwari', 'phc-osian'],
-    destinationId: 'chc-baori',
+    destinationId: 'phc-bhopalgarh',
     vehicle: {
       regNumber: 'RJ-19-GA-4821',
       model: 'Mahindra Bolero Cold-Chain Vaccine & ASV Carrier',
@@ -36,7 +36,7 @@ export const EMERGENCY_CIRCUITS_PRESETS: EmergencyCircuitPlan[] = [
         { item: 'Normal Saline (0.9% NaCl) IV Infusion 500ml', quantity: 120, unit: 'Bottles' },
         { item: 'Oral Rehydration Salts (ORS) Sachets 20.5g', quantity: 600, unit: 'Sachets' }
       ],
-      'chc-baori': [
+      'phc-bhopalgarh': [
         { item: 'Polyvalent Anti-Snake Venom (ASV) IP 10ml', quantity: 40, unit: 'Vials' },
         { item: 'Ringer Lactate Injection 500ml', quantity: 150, unit: 'Bottles' }
       ]
@@ -47,9 +47,9 @@ export const EMERGENCY_CIRCUITS_PRESETS: EmergencyCircuitPlan[] = [
     title: 'Desert Heatwave IV Fluid & Oxygen Replenishment',
     description: 'Bulk resupply of dehydration buffers (ORS, Normal Saline, Ringer Lactate) and medical Oxygen cylinders across heat-stressed PHCs.',
     category: 'SUPPLY_DISTRIBUTION',
-    originId: 'rmscl-mandore',
+    originId: 'phc-mandore',
     waypointIds: ['phc-tinwari', 'phc-osian'],
-    destinationId: 'chc-phalodi',
+    destinationId: 'phc-bap',
     vehicle: {
       regNumber: 'RJ-19-GB-7712',
       model: 'Tata 407 Emergency Health Logistics Truck',
@@ -73,7 +73,7 @@ export const EMERGENCY_CIRCUITS_PRESETS: EmergencyCircuitPlan[] = [
         { item: 'Ringer Lactate Injection 500ml', quantity: 180, unit: 'Bottles' },
         { item: 'Type-D Medical Oxygen Cylinders (46.7L)', quantity: 4, unit: 'Cylinders' }
       ],
-      'chc-phalodi': [
+      'phc-bap': [
         { item: 'Oral Rehydration Salts (ORS) Sachets 20.5g', quantity: 2000, unit: 'Sachets' },
         { item: 'Normal Saline (0.9% NaCl) IV Infusion 500ml', quantity: 400, unit: 'Bottles' },
         { item: 'Zinc Sulfate Dispersible Tablets 20mg', quantity: 1000, unit: 'Tablets' },
@@ -86,9 +86,9 @@ export const EMERGENCY_CIRCUITS_PRESETS: EmergencyCircuitPlan[] = [
     title: 'Surge Doctor & Emergency Anesthetist Deployment',
     description: 'Rapid rotation and deployment of emergency medical officers, obstetric specialists, and critical care nurses to overburdened rural PHCs.',
     category: 'PERSONNEL_DEPLOYMENT',
-    originId: 'chc-baori',
-    waypointIds: ['phc-bhopalgarh', 'phc-tinwari', 'phc-osian'],
-    destinationId: 'rmscl-mandore',
+    originId: 'phc-bhopalgarh',
+    waypointIds: ['phc-mathania', 'phc-tinwari', 'phc-osian'],
+    destinationId: 'phc-mandore',
     vehicle: {
       regNumber: 'RJ-19-EM-9901',
       model: 'Force Traveller Emergency Medical Quick Response Unit',
@@ -101,7 +101,7 @@ export const EMERGENCY_CIRCUITS_PRESETS: EmergencyCircuitPlan[] = [
       phone: '+91 98281 77309'
     },
     personnelAllocations: {
-      'phc-bhopalgarh': [
+      'phc-mathania': [
         { role: 'Emergency Medical Officer (MBBS)', count: 1 },
         { role: 'Staff Nurse (Critical Care)', count: 2 },
         { role: 'Lab Technician (Bio-chemistry)', count: 1 }
@@ -115,7 +115,7 @@ export const EMERGENCY_CIRCUITS_PRESETS: EmergencyCircuitPlan[] = [
         { role: 'Emergency Staff Nurse (GNM)', count: 3 },
         { role: 'Ambulance Paramedic', count: 1 }
       ],
-      'rmscl-mandore': [
+      'phc-mandore': [
         { role: 'Inspection & Debriefing Officer', count: 1 }
       ]
     }
@@ -125,9 +125,9 @@ export const EMERGENCY_CIRCUITS_PRESETS: EmergencyCircuitPlan[] = [
     title: 'Monsoon Flash Outbreak & Epidemiology Rapid Unit',
     description: 'Specialized mobile surveillance and field clinical team deployed across flood-prone river basin PHCs for acute diarrheal / fever response.',
     category: 'PERSONNEL_DEPLOYMENT',
-    originId: 'chc-bilara',
+    originId: 'phc-shergarh',
     waypointIds: ['phc-bhopalgarh', 'phc-mandore', 'phc-luni'],
-    destinationId: 'rmscl-mandore',
+    destinationId: 'phc-osian',
     vehicle: {
       regNumber: 'RJ-19-ER-5533',
       model: 'Tata Winger Mobile Epidemiology Surveillance Van',
@@ -153,7 +153,7 @@ export const EMERGENCY_CIRCUITS_PRESETS: EmergencyCircuitPlan[] = [
         { role: 'Emergency Staff Nurse', count: 2 },
         { role: 'Paramedic / Field Scout', count: 1 }
       ],
-      'rmscl-mandore': [
+      'phc-osian': [
         { role: 'Surveillance Data Scientist', count: 1 }
       ]
     }
@@ -189,17 +189,17 @@ export const INTER_PHC_CORRIDORS: InterPHCCorridor[] = [
     emergencyStatus: 'CAUTION_HEATWAVE'
   },
   {
-    id: 'corridor-mandore-baori',
+    id: 'corridor-mandore-mathania',
     facilityAId: 'phc-mandore',
-    facilityBId: 'chc-baori',
-    roadDistanceKm: 35.8,
-    travelTimeMins: 45,
+    facilityBId: 'phc-mathania',
+    roadDistanceKm: 21.8,
+    travelTimeMins: 28,
     highwayType: 'National Highway (NH-62)',
     emergencyStatus: 'CLEAR'
   },
   {
-    id: 'corridor-baori-bhopalgarh',
-    facilityAId: 'chc-baori',
+    id: 'corridor-mathania-bhopalgarh',
+    facilityAId: 'phc-mathania',
     facilityBId: 'phc-bhopalgarh',
     roadDistanceKm: 48.0,
     travelTimeMins: 54,
@@ -216,12 +216,12 @@ export const INTER_PHC_CORRIDORS: InterPHCCorridor[] = [
     emergencyStatus: 'CLEAR'
   },
   {
-    id: 'corridor-baori-osian',
-    facilityAId: 'chc-baori',
+    id: 'corridor-bhopalgarh-osian',
+    facilityAId: 'phc-bhopalgarh',
     facilityBId: 'phc-osian',
-    roadDistanceKm: 34.0,
-    travelTimeMins: 44,
-    highwayType: 'Baori-Osian Link Highway',
+    roadDistanceKm: 62.0,
+    travelTimeMins: 70,
+    highwayType: 'Bhopalgarh-Osian Link Highway',
     emergencyStatus: 'CLEAR'
   },
   {

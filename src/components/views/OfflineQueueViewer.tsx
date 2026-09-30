@@ -29,6 +29,9 @@ import {
 import { useApp } from '../../context/AppContext.tsx';
 import { OfflineQueueItem } from '../../types.ts';
 import { EmptyState } from '../ui/EmptyState.tsx';
+import {
+  calculateExponentialBackoffDelay
+} from '../../utils/retryBackoff.ts';
 
 export const OfflineQueueViewer: React.FC = () => {
   const {
@@ -51,7 +54,7 @@ export const OfflineQueueViewer: React.FC = () => {
     showNotification
   } = useApp();
 
-  const [filterStatus, setFilterStatus] = useState<'ALL' | 'PENDING' | 'SYNCED'>('ALL');
+  const [filterStatus, setFilterStatus] = useState<'ALL' | 'PENDING' | 'FAILED' | 'SYNCED'>('ALL');
   const [selectedItemForPayload, setSelectedItemForPayload] = useState<OfflineQueueItem | null>(null);
   const [copied, setCopied] = useState(false);
   const [exportScope, setExportScope] = useState<'PENDING_ONLY' | 'ALL_RECORDS'>('PENDING_ONLY');
@@ -73,6 +76,7 @@ export const OfflineQueueViewer: React.FC = () => {
 
   const filteredQueue = offlineQueue.filter(item => {
     if (filterStatus === 'PENDING') return item.status !== 'SYNCED';
+    if (filterStatus === 'FAILED') return item.status === 'FAILED_RETRY' || item.retryCount > 0;
     if (filterStatus === 'SYNCED') return item.status === 'SYNCED';
     return true;
   });
@@ -274,6 +278,8 @@ export const OfflineQueueViewer: React.FC = () => {
             ? 'bg-amber-50/90 border-amber-300 text-amber-950'
             : isQueueSyncing
             ? 'bg-blue-50/90 border-blue-300 text-blue-950'
+            : failedRetryItems.length > 0
+            ? 'bg-rose-50/90 border-rose-300 text-rose-950'
             : 'bg-emerald-50/90 border-emerald-300 text-emerald-950'
         }`}
       >
@@ -285,6 +291,8 @@ export const OfflineQueueViewer: React.FC = () => {
                   ? 'bg-amber-200/80 text-amber-900'
                   : isQueueSyncing
                   ? 'bg-blue-200/80 text-blue-900'
+                  : failedRetryItems.length > 0
+                  ? 'bg-rose-200/80 text-rose-900'
                   : 'bg-emerald-200/80 text-emerald-900'
               }`}
             >
@@ -292,6 +300,8 @@ export const OfflineQueueViewer: React.FC = () => {
                 <WifiOff className="w-5 h-5" />
               ) : isQueueSyncing ? (
                 <RefreshCw className="w-5 h-5 animate-spin" />
+              ) : failedRetryItems.length > 0 ? (
+                <ShieldAlert className="w-5 h-5" />
               ) : (
                 <Wifi className="w-5 h-5" />
               )}
@@ -300,10 +310,12 @@ export const OfflineQueueViewer: React.FC = () => {
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-bold text-sm">
                   {isOfflineMode
-                    ? 'Low-Bandwidth Offline Sync Mode Active'
+                    ? 'Connection Status: OFFLINE · Buffering Actions Locally'
                     : isQueueSyncing
-                    ? 'Connection Online · Uploading Pending Records to Firestore'
-                    : 'Online Demo Server & Firestore Sync Mode Active'}
+                    ? 'Connection Status: SYNCING · Uploading Pending Records'
+                    : failedRetryItems.length > 0
+                    ? `Connection Status: ONLINE · ${failedRetryItems.length} Failed Item(s) Requiring Retry`
+                    : 'Connection Status: ONLINE · Cloud & Local Ledger Synchronized'}
                 </span>
                 <span
                   className={`font-mono text-[10px] font-bold px-2 py-0.5 rounded ${
@@ -311,14 +323,18 @@ export const OfflineQueueViewer: React.FC = () => {
                       ? 'bg-amber-200 text-amber-900'
                       : isQueueSyncing
                       ? 'bg-blue-200 text-blue-900'
+                      : failedRetryItems.length > 0
+                      ? 'bg-rose-200 text-rose-900'
                       : 'bg-emerald-200 text-emerald-900'
                   }`}
                 >
                   {isOfflineMode
-                    ? 'BUFFERING TO LOCAL STORAGE'
+                    ? 'OFFLINE'
                     : isQueueSyncing
-                    ? `FIRESTORE UPLOAD IN PROGRESS · ${queueSyncProgress}%`
-                    : 'ONLINE · READY TO SYNC'}
+                    ? `SYNCING · ${queueSyncProgress}%`
+                    : failedRetryItems.length > 0
+                    ? `FAILED ITEMS REQUIRING RETRY (${failedRetryItems.length})`
+                    : 'ONLINE'}
                 </span>
               </div>
               <p className="text-xs opacity-90 mt-0.5">
@@ -601,7 +617,16 @@ export const OfflineQueueViewer: React.FC = () => {
                 filterStatus === 'PENDING' ? 'bg-white text-amber-900 shadow-2xs font-bold' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Pending Sync ({pendingItems.length})
+              Queued / Pending ({pendingItems.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setFilterStatus('FAILED')}
+              className={`px-2.5 py-1 rounded-md font-semibold transition-colors cursor-pointer ${
+                filterStatus === 'FAILED' ? 'bg-white text-rose-900 shadow-2xs font-bold' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Failed / Retry ({failedRetryItems.length})
             </button>
             <button
               type="button"
@@ -688,126 +713,187 @@ export const OfflineQueueViewer: React.FC = () => {
             />
           </div>
         ) : (
-          filteredQueue.map(item => (
-            <div
-              key={item.id}
-              className={`p-4 rounded-xl border transition-all flex flex-col md:flex-row md:items-center justify-between gap-4 ${
-                item.status === 'SYNCED'
-                  ? 'bg-slate-50/80 border-slate-200 opacity-80'
-                  : item.status === 'SYNCING'
-                  ? 'bg-blue-50/80 border-blue-300 shadow-xs'
-                  : 'bg-amber-50/40 border-amber-200/90 shadow-2xs'
-              }`}
-            >
-              <div className="flex items-start gap-3.5 min-w-0">
-                <div className="p-2.5 rounded-xl bg-white border border-slate-200 shadow-2xs shrink-0 mt-0.5">
-                  {getModuleIcon(item.module)}
-                </div>
+          filteredQueue.map(item => {
+            const maxRetries = 3;
+            const isDeadLetter =
+              item.status === 'FAILED_RETRY' && (item.retryCount || 0) >= maxRetries;
+            const statusDisplay =
+              item.status === 'SYNCED'
+                ? 'Synced'
+                : item.status === 'SYNCING'
+                ? 'Syncing'
+                : isDeadLetter
+                ? 'Dead-Letter'
+                : item.status === 'FAILED_RETRY'
+                ? 'Failed'
+                : 'Queued';
+            const nextBackoffSec =
+              item.status !== 'SYNCED' && (item.status === 'FAILED_RETRY' || item.retryCount > 0)
+                ? (calculateExponentialBackoffDelay(Math.max(1, item.retryCount || 1), 500, 8000, 0) / 1000).toFixed(1)
+                : null;
+            const transferOrOrderRef =
+              item.payload?.redistributionId ||
+              item.payload?.transferId ||
+              item.payload?.orderId ||
+              null;
 
-                <div className="space-y-1 min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-mono text-xs font-bold text-slate-900 bg-white border border-slate-200 px-2 py-0.5 rounded shadow-2xs">
-                      {item.id}
-                    </span>
-                    <span className="text-xs font-bold text-slate-800">
-                      {item.moduleLabel}
-                    </span>
-                    <span className="text-slate-300">·</span>
-                    <span className="font-mono text-[11px] text-slate-500 font-medium">
-                      {item.action}
-                    </span>
-
-                    {/* Status Badge */}
-                    {item.status === 'SYNCED' ? (
-                      <span className="inline-flex items-center gap-1 font-mono text-[10px] font-bold text-emerald-800 bg-emerald-100/90 border border-emerald-200 px-2 py-0.5 rounded">
-                        <Check className="w-3 h-3 text-emerald-700" />
-                        SYNCED TO CLOUD
-                      </span>
-                    ) : item.status === 'SYNCING' ? (
-                      <span className="inline-flex items-center gap-1 font-mono text-[10px] font-bold text-blue-800 bg-blue-100 border border-blue-300 px-2 py-0.5 rounded animate-pulse">
-                        <RefreshCw className="w-3 h-3 animate-spin" />
-                        TRANSMITTING...
-                      </span>
-                    ) : item.status === 'FAILED_RETRY' ? (
-                      <span className="inline-flex items-center gap-1 font-mono text-[10px] font-bold text-rose-900 bg-rose-100 border border-rose-300 px-2 py-0.5 rounded">
-                        <RefreshCw className="w-3 h-3 text-rose-700" />
-                        BACKOFF RETRY ({item.retryCount || 1})
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 font-mono text-[10px] font-bold text-amber-900 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded">
-                        <Clock className="w-3 h-3 text-amber-700" />
-                        WAITING FOR SYNC
-                      </span>
-                    )}
+            return (
+              <div
+                key={item.id}
+                className={`p-4 rounded-xl border transition-all flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+                  item.status === 'SYNCED'
+                    ? 'bg-slate-50/80 border-slate-200 opacity-80'
+                    : item.status === 'SYNCING'
+                    ? 'bg-blue-50/80 border-blue-300 shadow-xs'
+                    : item.status === 'FAILED_RETRY'
+                    ? 'bg-rose-50/60 border-rose-300 shadow-xs'
+                    : 'bg-amber-50/40 border-amber-200/90 shadow-2xs'
+                }`}
+              >
+                <div className="flex items-start gap-3.5 min-w-0">
+                  <div className="p-2.5 rounded-xl bg-white border border-slate-200 shadow-2xs shrink-0 mt-0.5">
+                    {getModuleIcon(item.module)}
                   </div>
 
-                  <div className="text-sm font-semibold text-slate-900 flex flex-wrap items-center gap-2">
-                    <span>{item.entityName}</span>
-                    {item.quantity && (
-                      <span className="font-mono text-xs font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                        {item.quantity} {item.unit || 'units'}
+                  <div className="space-y-1.5 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-xs font-bold text-slate-900 bg-white border border-slate-200 px-2 py-0.5 rounded shadow-2xs">
+                        {item.id}
                       </span>
-                    )}
-                  </div>
+                      <span className="text-xs font-bold text-slate-900">
+                        Action Type: {item.action}
+                      </span>
+                      <span className="text-slate-300">·</span>
+                      <span className="font-mono text-[11px] text-slate-600 font-medium">
+                        {item.moduleLabel}
+                      </span>
 
-                  {/* Metadata and Payload Summary */}
-                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500 font-mono">
-                    <span>Facility: <strong>{item.facilityName}</strong></span>
-                    <span>·</span>
-                    <span>Buffered: <strong>{item.formattedTime}</strong></span>
-                    <span>·</span>
-                    <span>Size: <strong>{item.byteSize} B</strong></span>
-                    {item.retryCount > 0 && (
-                      <>
-                        <span>·</span>
-                        <span className="text-amber-800 font-bold">Retries: {item.retryCount}</span>
-                      </>
-                    )}
-                  </div>
-                  {item.errorMessage && (
-                    <div className="text-[11px] font-mono text-rose-700 bg-rose-50 border border-rose-200 px-2 py-1 rounded mt-1">
-                      {item.errorMessage}
+                      {/* Status Badge: Queued / Syncing / Synced / Failed / Dead-Letter */}
+                      {item.status === 'SYNCED' ? (
+                        <span className="inline-flex items-center gap-1 font-mono text-[10px] font-bold text-emerald-800 bg-emerald-100/90 border border-emerald-200 px-2 py-0.5 rounded">
+                          <Check className="w-3 h-3 text-emerald-700" />
+                          Status: {statusDisplay}
+                        </span>
+                      ) : item.status === 'SYNCING' ? (
+                        <span className="inline-flex items-center gap-1 font-mono text-[10px] font-bold text-blue-800 bg-blue-100 border border-blue-300 px-2 py-0.5 rounded animate-pulse">
+                          <RefreshCw className="w-3 h-3 animate-spin" />
+                          Status: {statusDisplay}
+                        </span>
+                      ) : isDeadLetter ? (
+                        <span className="inline-flex items-center gap-1 font-mono text-[10px] font-bold text-rose-950 bg-rose-200 border border-rose-400 px-2 py-0.5 rounded">
+                          <ShieldAlert className="w-3 h-3 text-rose-800" />
+                          Status: {statusDisplay}
+                        </span>
+                      ) : item.status === 'FAILED_RETRY' ? (
+                        <span className="inline-flex items-center gap-1 font-mono text-[10px] font-bold text-rose-900 bg-rose-100 border border-rose-300 px-2 py-0.5 rounded">
+                          <RefreshCw className="w-3 h-3 text-rose-700" />
+                          Status: {statusDisplay} (Retry {item.retryCount || 1}/{maxRetries})
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 font-mono text-[10px] font-bold text-amber-900 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded">
+                          <Clock className="w-3 h-3 text-amber-700" />
+                          Status: {statusDisplay}
+                        </span>
+                      )}
                     </div>
-                  )}
+
+                    <div className="text-sm font-semibold text-slate-900 flex flex-wrap items-center gap-2">
+                      <span>
+                        Target: <strong>{item.entityName}</strong>
+                      </span>
+                      {item.quantity !== undefined && (
+                        <span className="font-mono text-xs font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                          {item.quantity} {item.unit || 'units'}
+                        </span>
+                      )}
+                      {transferOrOrderRef && (
+                        <span className="font-mono text-xs font-bold text-blue-800 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                          Ref: {transferOrOrderRef}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Metadata: PHC, Timestamp, Retry Count, Next Retry Time */}
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-600 font-mono">
+                      <span>
+                        Target PHC: <strong className="text-slate-900">{item.facilityName}</strong> ({item.facilityId})
+                      </span>
+                      <span>·</span>
+                      <span>
+                        Timestamp: <strong className="text-slate-900">{item.formattedTime}</strong> ({item.timestamp.slice(0, 19).replace('T', ' ')})
+                      </span>
+                      <span>·</span>
+                      <span>
+                        Retry Count: <strong className={item.retryCount > 0 ? 'text-rose-800' : 'text-slate-900'}>{item.retryCount || 0}/{maxRetries}</strong>
+                      </span>
+                      {nextBackoffSec && (
+                        <>
+                          <span>·</span>
+                          <span className="text-amber-900 font-bold">
+                            Next Retry Delay: +{nextBackoffSec}s (Exponential Backoff)
+                          </span>
+                        </>
+                      )}
+                      <span>·</span>
+                      <span>Size: <strong>{item.byteSize} B</strong></span>
+                    </div>
+
+                    {item.errorMessage && (
+                      <div className="text-[11px] font-mono text-rose-800 bg-rose-50 border border-rose-200 px-2.5 py-1.5 rounded mt-1 flex items-start gap-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
+                        <span>
+                          <strong>Last Error:</strong> {item.errorMessage}
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
 
-              {/* Action buttons */}
-              <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-center">
-                <button
-                  type="button"
-                  onClick={() => setSelectedItemForPayload(item)}
-                  className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg text-xs font-bold transition-colors shadow-2xs cursor-pointer flex items-center gap-1"
-                  title="Inspect raw JSON payload buffered in LocalStorage"
-                >
-                  <Eye className="w-3.5 h-3.5 text-slate-600" />
-                  <span>Inspect JSON</span>
-                </button>
-
-                {item.status !== 'SYNCED' && (
+                {/* Action buttons */}
+                <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-center">
                   <button
                     type="button"
-                    onClick={() => syncQueueItem(item.id)}
-                    disabled={isQueueSyncing}
-                    className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-200 text-white disabled:text-slate-400 rounded-lg text-xs font-bold transition-colors shadow-xs cursor-pointer flex items-center gap-1"
+                    onClick={() => setSelectedItemForPayload(item)}
+                    className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg text-xs font-bold transition-colors shadow-2xs cursor-pointer flex items-center gap-1"
+                    title="Inspect why action failed and view buffered JSON payload"
                   >
-                    <ArrowUpRight className="w-3.5 h-3.5" />
-                    <span>Sync Item</span>
+                    <Eye className="w-3.5 h-3.5 text-slate-600" />
+                    <span>{item.errorMessage ? 'Inspect Failure / JSON' : 'Inspect JSON'}</span>
                   </button>
-                )}
 
-                <button
-                  type="button"
-                  onClick={() => removeQueueItem(item.id)}
-                  className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-                  title="Remove record from local storage queue"
-                  aria-label="Remove record"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                  {item.status !== 'SYNCED' && (
+                    <button
+                      type="button"
+                      onClick={() => syncQueueItem(item.id)}
+                      disabled={isQueueSyncing}
+                      className={`px-3 py-1.5 disabled:bg-slate-200 text-white disabled:text-slate-400 rounded-lg text-xs font-bold transition-colors shadow-xs cursor-pointer flex items-center gap-1 ${
+                        item.status === 'FAILED_RETRY' || item.retryCount > 0
+                          ? 'bg-rose-700 hover:bg-rose-800'
+                          : 'bg-emerald-700 hover:bg-emerald-800'
+                      }`}
+                    >
+                      <ArrowUpRight className="w-3.5 h-3.5" />
+                      <span>
+                        {item.status === 'FAILED_RETRY' || item.retryCount > 0
+                          ? 'Retry Failed Action'
+                          : 'Sync Item Now'}
+                      </span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => removeQueueItem(item.id)}
+                    className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                    title="Remove record from local storage queue"
+                    aria-label="Remove record"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
 

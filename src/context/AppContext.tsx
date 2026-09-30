@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import {
   Role,
   PHCFacility,
@@ -14,8 +14,19 @@ import {
   GoogleMapsPlace,
   AIChatMessage,
   OfflineQueueItem,
-  ProactiveStockAlert
+  ProactiveStockAlert,
+  SupplyChainAuditEntry,
+  StatusTransitionRecord,
+  StaffAttendanceRecord,
+  AttendanceStatus
 } from '../types.ts';
+import {
+  SupportedLanguageCode,
+  TranslationDictionary,
+  getSavedLanguage,
+  saveLanguagePreference,
+  getTranslation
+} from '../i18n/index.ts';
 import {
   FACILITIES,
   INITIAL_MEDICINES,
@@ -26,11 +37,17 @@ import {
   INITIAL_ORDERS,
   INITIAL_REDISTRIBUTION,
   INITIAL_ALERTS,
-  INTEGRATION_CONNECTORS
+  INTEGRATION_CONNECTORS,
+  getFacilityStaffDirectory,
+  getInitialAttendanceRecordsForPHC
 } from '../data/mockData.ts';
 import { generateEssentialMedicinesForPHC } from '../data/nationalEssentialMedicines.ts';
 import { buildDefaultFacilityInventoryMap } from '../data/networkData.ts';
 import { resolveMedicineMatch } from '../utils/medicineMatcher.ts';
+import {
+  getVoiceBcp47Locale,
+  type RegisterVoiceBcp47Locale
+} from '../utils/registerVoiceCommandParser.ts';
 import {
   applyFefoStockAdjustment,
   evaluateMedicineThresholdAndReplenishment
@@ -92,10 +109,20 @@ interface AppContextType {
   ) => void;
   capacity: CapacityRecord;
   staff: StaffMember[];
+  attendanceRecords: StaffAttendanceRecord[];
+  markStaffAttendance: (staffId: string, status: AttendanceStatus, dateStr?: string) => Promise<boolean>;
+  saveBatchAttendance: (
+    entries: Array<{ staffId: string; status: AttendanceStatus }>,
+    dateStr?: string
+  ) => Promise<boolean>;
   workforce: WorkforceSummary;
+  language: SupportedLanguageCode;
+  setLanguage: (lang: SupportedLanguageCode) => void;
+  t: TranslationDictionary;
   weather: WeatherPreparedness;
   orders: LogisticsOrder[];
   redistributions: RedistributionOpportunity[];
+  supplyChainAuditLog: SupplyChainAuditEntry[];
   alerts: OperationalAlert[];
   connectors: IntegrationConnector[];
   isOfflineMode: boolean;
@@ -113,12 +140,17 @@ interface AppContextType {
   signOutUser: () => Promise<void>;
   inchargeSession: AuthenticatedInchargeSession | null;
   isAuthModalOpen: boolean;
-  authModalTab: 'signin' | 'signup' | 'directory';
+  authModalTab: 'demo' | 'officer' | 'signin' | 'signup' | 'directory';
   pendingPHCToUnlock: PHCFacility | null;
-  openAuthModal: (tab?: 'signin' | 'signup' | 'directory', targetPHC?: PHCFacility | null) => void;
+  pendingActionLabel: string | null;
+  openAuthModal: (
+    tab?: 'demo' | 'officer' | 'signin' | 'signup' | 'directory',
+    targetPHC?: PHCFacility | null
+  ) => void;
   closeAuthModal: () => void;
   authenticatePHCIncharge: (session: AuthenticatedInchargeSession, chosenPHC: PHCFacility) => void;
   signOutIncharge: () => void;
+  requireAuthorizedAccess: (action: () => void | Promise<any>, actionLabel?: string) => boolean;
 
   // AI & Chat
   chatMessages: AIChatMessage[];
@@ -126,8 +158,12 @@ interface AppContextType {
   sendChatMessage: (content: string, persona?: string, taskComplexity?: string) => Promise<void>;
   clearChatHistory: () => void;
 
-  // Audio Transcription with gemini-3.5-transcribe
-  transcribeAudio: (audioBlob: Blob) => Promise<string>;
+  // Audio Transcription with language-aware Gemini Audio ASR (en-IN, hi-IN, ta-IN, te-IN)
+  transcribeAudio: (
+    audioBlob: Blob,
+    language?: RegisterVoiceBcp47Locale | string,
+    browserTranscript?: string
+  ) => Promise<string>;
   isTranscribing: boolean;
 
   // Maps Grounding with gemini-3.8-flash
@@ -186,6 +222,7 @@ interface AppContextType {
     },
     confirmedByUser?: boolean
   ) => Promise<boolean>;
+  rejectRedistribution: (id: string, reason?: string) => Promise<boolean>;
   advanceRedistribution: (id: string) => Promise<boolean>;
   refreshServerState: (authoritativePayload?: {
     medicines?: MedicineItem[];
@@ -351,7 +388,15 @@ const SEED_OFFLINE_QUEUE: OfflineQueueItem[] = [
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [role, setRole] = useState<Role>('medical_officer');
   const [facilities] = useState<PHCFacility[]>(FACILITIES);
-  const [selectedPHC, setSelectedPHCState] = useState<PHCFacility>(FACILITIES[0]);
+  const [selectedPHC, setSelectedPHCState] = useState<PHCFacility>(() => {
+    const saved = loadSavedInchargeSession();
+    if (saved) {
+      const boundId = saved.assignedPhcId || saved.phcId;
+      const found = FACILITIES.find((f) => f.id === boundId);
+      if (found) return found;
+    }
+    return FACILITIES[0];
+  });
   const [activeModule, setActiveModuleState] = useState<string>('home');
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState<boolean>(false);
   const [isOfflineMode, setIsOfflineMode] = useState<boolean>(false);
@@ -443,6 +488,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       maxThreshold?: number;
     }
   ) => {
+    if (!inchargeSessionRef.current) {
+      pendingProtectedActionRef.current = () => {
+        updateFacilityMedicineStock(phcId, medicineIdOrName, updates);
+      };
+      setPendingActionLabel(`Modify medicine stock or threshold (${medicineIdOrName})`);
+      setAuthModalTab('signin');
+      setIsAuthModalOpen(true);
+      return;
+    }
     const applyUpdateToList = (list: MedicineItem[]): MedicineItem[] => {
       const match = resolveMedicineMatch(list, medicineIdOrName, medicineIdOrName);
       const targetId = match.status === 'MATCHED' ? match.medicine.id : medicineIdOrName;
@@ -522,9 +576,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [inchargeSession, setInchargeSession] = useState<AuthenticatedInchargeSession | null>(() =>
     loadSavedInchargeSession()
   );
+  const inchargeSessionRef = useRef<AuthenticatedInchargeSession | null>(inchargeSession);
+  inchargeSessionRef.current = inchargeSession;
+
+  const pendingProtectedActionRef = useRef<(() => void | Promise<any>) | null>(null);
+  const [pendingActionLabel, setPendingActionLabel] = useState<string | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
-  const [authModalTab, setAuthModalTab] = useState<'signin' | 'signup' | 'directory'>('signin');
+  const [authModalTab, setAuthModalTab] = useState<
+    'demo' | 'officer' | 'signin' | 'signup' | 'directory'
+  >('signin');
   const [pendingPHCToUnlock, setPendingPHCToUnlock] = useState<PHCFacility | null>(null);
+
+  const requireAuthorizedAccess = (
+    action: () => void | Promise<any>,
+    actionLabel: string = 'Modify supply-chain data'
+  ): boolean => {
+    if (inchargeSessionRef.current) {
+      void action();
+      return true;
+    }
+    pendingProtectedActionRef.current = action;
+    setPendingActionLabel(actionLabel);
+    setAuthModalTab('signin');
+    setIsAuthModalOpen(true);
+    return false;
+  };
 
   const applySelectedPHCInternal = (phc: PHCFacility) => {
     setSelectedPHCState(phc);
@@ -560,24 +636,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const setSelectedPHC = (phc: PHCFacility, bypassPassword?: boolean) => {
-    if (
-      bypassPassword ||
-      phc.id === selectedPHC.id ||
-      inchargeSession?.unlockedPhcIds?.includes(phc.id)
-    ) {
-      applySelectedPHCInternal(phc);
-      return;
+  const setSelectedPHC = (phc: PHCFacility, _bypassPassword?: boolean) => {
+    if (inchargeSession) {
+      const boundPhcId = inchargeSession.assignedPhcId || inchargeSession.phcId;
+      if (phc.id !== boundPhcId) {
+        notify(
+          `Facility Access Restricted: Officer ${inchargeSession.officerId} is strictly bound to ${
+            inchargeSession.assignedPhcName || inchargeSession.phcName
+          }. Sign out to authenticate into another PHC.`
+        );
+        return;
+      }
     }
-
-    // Prompt for the target PHC's specific Incharge password before entering
-    setPendingPHCToUnlock(phc);
-    setAuthModalTab('signin');
-    setIsAuthModalOpen(true);
+    applySelectedPHCInternal(phc);
   };
 
   const openAuthModal = (
-    tab: 'signin' | 'signup' | 'directory' = 'signin',
+    tab: 'demo' | 'officer' | 'signin' | 'signup' | 'directory' = 'signin',
     targetPHC: PHCFacility | null = null
   ) => {
     setAuthModalTab(tab);
@@ -588,34 +663,246 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const closeAuthModal = () => {
     setIsAuthModalOpen(false);
     setPendingPHCToUnlock(null);
+    pendingProtectedActionRef.current = null;
+    setPendingActionLabel(null);
   };
 
   const authenticatePHCIncharge = (
     session: AuthenticatedInchargeSession,
     chosenPHC: PHCFacility
   ) => {
-    setInchargeSession(session);
-    saveInchargeSession(session);
-    setRole(session.role);
-    applySelectedPHCInternal(chosenPHC);
+    const boundSession: AuthenticatedInchargeSession = {
+      ...session,
+      assignedPhcId: chosenPHC.id,
+      assignedPhcName: chosenPHC.name,
+      phcId: chosenPHC.id,
+      phcName: chosenPHC.name,
+      unlockedPhcIds: [chosenPHC.id],
+      authenticationStatus: 'AUTHENTICATED'
+    };
+    inchargeSessionRef.current = boundSession;
+    setInchargeSession(boundSession);
+    saveInchargeSession(boundSession, boundSession.rememberDevice);
+    setRole(boundSession.role);
+    if (chosenPHC.id !== selectedPHC.id) {
+      applySelectedPHCInternal(chosenPHC);
+    }
     setIsAuthModalOpen(false);
     setPendingPHCToUnlock(null);
+    const queuedAction = pendingProtectedActionRef.current;
+    pendingProtectedActionRef.current = null;
+    setPendingActionLabel(null);
+    if (queuedAction) {
+      setTimeout(() => {
+        void queuedAction();
+      }, 20);
+    }
   };
 
   const signOutIncharge = () => {
+    const token = inchargeSession?.sessionToken;
+    if (token) {
+      fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ sessionToken: token })
+      }).catch(() => {});
+    }
+    inchargeSessionRef.current = null;
     setInchargeSession(null);
     saveInchargeSession(null);
     setIsAuthModalOpen(false);
     setPendingPHCToUnlock(null);
+    pendingProtectedActionRef.current = null;
+    setPendingActionLabel(null);
   };
-  const [staff] = useState<StaffMember[]>(INITIAL_STAFF);
-  const [workforce] = useState<WorkforceSummary>(INITIAL_WORKFORCE_SUMMARY);
+
+  // Sync initial bound PHC inventory/capacity/weather if a remembered session was restored on startup
+  useEffect(() => {
+    if (inchargeSession) {
+      const boundId = inchargeSession.assignedPhcId || inchargeSession.phcId;
+      const boundPHC = facilities.find((f) => f.id === boundId);
+      if (boundPHC) {
+        applySelectedPHCInternal(boundPHC);
+      }
+    }
+  }, []);
+
+  // Centralized Multilingual (i18n) State: en, hi, ta, te
+  const [language, setLanguageState] = useState<SupportedLanguageCode>(() => getSavedLanguage());
+  const setLanguage = (lang: SupportedLanguageCode) => {
+    setLanguageState(lang);
+    saveLanguagePreference(lang);
+  };
+  const t = getTranslation(language);
+
+  const todayIsoDate = new Date().toISOString().split('T')[0];
+
+  // Facility-scoped Staff Directory & Attendance Records
+  const [staffByPhc, setStaffByPhc] = useState<Record<string, StaffMember[]>>(() => ({
+    'phc-osian': getFacilityStaffDirectory(FACILITIES[0])
+  }));
+
+  const [attendanceByPhc, setAttendanceByPhc] = useState<Record<string, StaffAttendanceRecord[]>>(() => {
+    const initialMap: Record<string, StaffAttendanceRecord[]> = {};
+    try {
+      const saved = localStorage.getItem('medresq_attendance_records_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') {
+          Object.assign(initialMap, parsed);
+        }
+      }
+    } catch {}
+    if (!initialMap['phc-osian'] || initialMap['phc-osian'].length === 0) {
+      initialMap['phc-osian'] = getInitialAttendanceRecordsForPHC(FACILITIES[0], todayIsoDate);
+    }
+    return initialMap;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('medresq_attendance_records_v1', JSON.stringify(attendanceByPhc));
+    } catch {}
+  }, [attendanceByPhc]);
+
+  const activeAttendancePhc = inchargeSession
+    ? facilities.find((f) => f.id === (inchargeSession.assignedPhcId || inchargeSession.phcId)) || selectedPHC
+    : selectedPHC;
+
+  // Ensure staff directory and initial attendance records exist for the active PHC and sync from server when online
+  useEffect(() => {
+    const phc = activeAttendancePhc;
+    setStaffByPhc((prev) => {
+      if (prev[phc.id] && prev[phc.id].length > 0) return prev;
+      return { ...prev, [phc.id]: getFacilityStaffDirectory(phc) };
+    });
+    setAttendanceByPhc((prev) => {
+      if (prev[phc.id] && prev[phc.id].length > 0) return prev;
+      return { ...prev, [phc.id]: getInitialAttendanceRecordsForPHC(phc, todayIsoDate) };
+    });
+
+    if (!isOfflineMode) {
+      const headers: Record<string, string> = {};
+      if (inchargeSession?.sessionToken) {
+        headers.Authorization = `Bearer ${inchargeSession.sessionToken}`;
+      }
+      fetch(`/api/attendance?phcId=${encodeURIComponent(phc.id)}&date=${encodeURIComponent(todayIsoDate)}`, {
+        headers
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data?.ok && Array.isArray(data.staff) && data.staff.length > 0) {
+            setStaffByPhc((prev) => ({ ...prev, [phc.id]: data.staff }));
+          }
+          if (data?.ok && Array.isArray(data.records) && data.records.length > 0) {
+            setAttendanceByPhc((prev) => {
+              const existingLocal = prev[phc.id] || [];
+              // Preserve any local QUEUED / recently saved records while merging server records
+              const merged = [...existingLocal];
+              for (const srvRec of data.records as StaffAttendanceRecord[]) {
+                const idx = merged.findIndex(
+                  (r) => r.staffId === srvRec.staffId && r.phcId === srvRec.phcId && r.date === srvRec.date
+                );
+                if (idx === -1) {
+                  merged.push(srvRec);
+                }
+              }
+              return { ...prev, [phc.id]: merged };
+            });
+          }
+        })
+        .catch(() => {});
+    }
+  }, [activeAttendancePhc.id, inchargeSession?.sessionToken, isOfflineMode, todayIsoDate]);
+
+  const currentPhcStaffBase = staffByPhc[activeAttendancePhc.id] || getFacilityStaffDirectory(activeAttendancePhc);
+  const attendanceRecords =
+    attendanceByPhc[activeAttendancePhc.id] || getInitialAttendanceRecordsForPHC(activeAttendancePhc, todayIsoDate);
+
+  // Derive current staff list with today's latest attendance status reflected
+  const staff: StaffMember[] = currentPhcStaffBase.map((member) => {
+    const todayRec = attendanceRecords.find(
+      (r) => r.staffId === member.id && r.phcId === activeAttendancePhc.id && r.date === todayIsoDate
+    );
+    const effectiveStatus: AttendanceStatus = todayRec
+      ? todayRec.status
+      : member.status === 'PRESENT' || member.status === 'FIELD_DUTY'
+      ? 'PRESENT'
+      : member.status === 'ABSENT'
+      ? 'ABSENT'
+      : member.status === 'ON_LEAVE'
+      ? 'ON_LEAVE'
+      : 'NOT_MARKED';
+
+    return {
+      ...member,
+      status: effectiveStatus,
+      attendanceStatus:
+        effectiveStatus === 'PRESENT'
+          ? 'Present'
+          : effectiveStatus === 'ABSENT'
+          ? 'Absent'
+          : effectiveStatus === 'ON_LEAVE'
+          ? 'On Leave'
+          : 'Not Marked',
+      lastAttendanceUpdate: todayRec?.markedAt || member.lastAttendanceUpdate,
+      lastMarkedBy: todayRec?.markedBy || member.lastMarkedBy
+    };
+  });
+
+  const presentTodayCount = staff.filter((s) => s.status === 'PRESENT').length;
+  const onLeaveTodayCount = staff.filter((s) => s.status === 'ON_LEAVE').length;
+  const workforce: WorkforceSummary = {
+    ...INITIAL_WORKFORCE_SUMMARY,
+    phcId: activeAttendancePhc.id,
+    totalStaffSanctioned: staff.length,
+    staffPresentToday: presentTodayCount,
+    staffOnLeave: onLeaveTodayCount,
+    staffOnFieldDuty: Math.min(2, presentTodayCount)
+  };
   const [weather, setWeather] = useState<WeatherPreparedness>(() =>
     buildRegionalWeatherPreparedness(FACILITIES[0])
   );
   const [orders, setOrders] = useState<LogisticsOrder[]>(INITIAL_ORDERS);
-  const [redistributions, setRedistributions] = useState<RedistributionOpportunity[]>(INITIAL_REDISTRIBUTION);
+  const [redistributions, setRedistributions] = useState<RedistributionOpportunity[]>(() => {
+    try {
+      const saved = localStorage.getItem('medresq_redistributions_state_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch {}
+    return INITIAL_REDISTRIBUTION;
+  });
   const [alerts, setAlerts] = useState<OperationalAlert[]>(INITIAL_ALERTS);
+  const [supplyChainAuditLog, setSupplyChainAuditLog] = useState<SupplyChainAuditEntry[]>(() => {
+    try {
+      const saved = localStorage.getItem('medresq_supply_chain_audit_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('medresq_redistributions_state_v1', JSON.stringify(redistributions));
+    } catch {}
+  }, [redistributions]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('medresq_supply_chain_audit_v1', JSON.stringify(supplyChainAuditLog));
+    } catch {}
+  }, [supplyChainAuditLog]);
   const [connectors, setConnectors] = useState<IntegrationConnector[]>(INTEGRATION_CONNECTORS);
   const [proactiveStockAlerts, setProactiveStockAlerts] = useState<ProactiveStockAlert[]>([]);
   const [activeThresholdToast, setActiveThresholdToast] = useState<ProactiveStockAlert | null>(null);
@@ -665,7 +952,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setAlerts((prev) => {
       const safePrev = prev.filter((a): a is OperationalAlert => Boolean(a && a.id));
       const nonThresholdAlerts = safePrev.filter(
-        (a) => !a.id.startsWith('ALT-THRESH-') && a.id !== 'ALT-101'
+        (a) =>
+          !a.id.startsWith('ALT-THRESH-') &&
+          a.id !== 'ALT-101' &&
+          (!a.phcId || a.phcId === selectedPHC.id)
       );
       const generatedOperationalAlerts: OperationalAlert[] = breachedPairs.map(({ med, evalRes }) => {
         const alertId = `ALT-THRESH-${med.id}`;
@@ -723,6 +1013,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateMedicineThreshold = (medicineId: string, newMinThreshold: number) => {
+    if (!inchargeSessionRef.current) {
+      pendingProtectedActionRef.current = () => {
+        updateMedicineThreshold(medicineId, newMinThreshold);
+      };
+      setPendingActionLabel(`Update medicine minimum safety threshold (${newMinThreshold} units)`);
+      setAuthModalTab('signin');
+      setIsAuthModalOpen(true);
+      return;
+    }
     const cleanThreshold = Math.max(1, Math.round(Number(newMinThreshold) || 1));
     const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -790,6 +1089,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const simulateThresholdBreach = (medicineId?: string) => {
+    if (!inchargeSessionRef.current) {
+      pendingProtectedActionRef.current = () => {
+        simulateThresholdBreach(medicineId);
+      };
+      setPendingActionLabel('Modify stock level (Simulate threshold breach)');
+      setAuthModalTab('signin');
+      setIsAuthModalOpen(true);
+      return;
+    }
     const targetMed =
       (medicineId ? medicines.find((m) => m.id === medicineId) : undefined) ||
       medicines.find((m) => m.stockoutRisk === 'NORMAL') ||
@@ -850,6 +1158,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setIsAuthLoading(false);
 
       if (user) {
+        // Retrieve Firebase ID Token in memory and sync user with Cloud SQL backend
+        try {
+          const idToken = await user.getIdToken();
+          await fetch('/api/users/sync', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${idToken}`,
+            },
+            body: JSON.stringify({
+              officerId: inchargeSession?.officerId,
+              officerName: inchargeSession?.officerName || user.displayName || 'PHC Staff Member',
+              designation: inchargeSession?.designation || 'Medical Officer In-Charge',
+              assignedPhcId: selectedPHC.id,
+              assignedPhcName: selectedPHC.name,
+              role,
+            }),
+          });
+        } catch (err) {
+          console.warn('Cloud SQL user profile sync deferred:', err);
+        }
+
         // Save/update user profile in Firestore
         try {
           const userDocRef = doc(db, 'users', user.uid);
@@ -869,7 +1199,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     return () => unsubscribe();
-  }, [role, selectedPHC.id]);
+  }, [role, selectedPHC.id, selectedPHC.name, inchargeSession?.officerId, inchargeSession?.officerName, inchargeSession?.designation]);
 
   // Firestore Realtime listener for Orders
   useEffect(() => {
@@ -936,6 +1266,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         if (Array.isArray(data?.redistributions)) {
           setRedistributions(data.redistributions);
+        }
+        if (Array.isArray(data?.supplyChainAuditLog) && data.supplyChainAuditLog.length > 0) {
+          setSupplyChainAuditLog(data.supplyChainAuditLog);
         }
         if (data?.capacity && typeof data.capacity.totalBeds === 'number') {
           setCapacity(data.capacity);
@@ -1127,6 +1460,53 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
         await assertServerResponse(res, 'Alert acknowledge sync');
       }
+    } else if (item.action === 'MARK_STAFF_ATTENDANCE') {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (inchargeSessionRef.current?.sessionToken) {
+        headers.Authorization = `Bearer ${inchargeSessionRef.current.sessionToken}`;
+      }
+      const targetDate = item.payload?.date || todayIsoDate;
+      const entries = Array.isArray(item.payload?.entries)
+        ? item.payload.entries
+        : [{ staffId: item.payload?.staffId, status: item.payload?.status }];
+
+      // Mark records as SYNCING before network call
+      setAttendanceByPhc((prev) => {
+        const list = prev[targetPhcId] || [];
+        return {
+          ...prev,
+          [targetPhcId]: list.map((r) =>
+            r.date === targetDate && entries.some((e: any) => e.staffId === r.staffId)
+              ? { ...r, syncStatus: 'SYNCING' }
+              : r
+          )
+        };
+      });
+
+      const res = await fetch('/api/attendance/mark', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          phcId: targetPhcId,
+          date: targetDate,
+          entries,
+          markedBy: item.payload?.markedBy
+        })
+      });
+      await assertServerResponse(res, 'Staff attendance sync');
+
+      // Mark records as SYNCED on confirmation
+      setAttendanceByPhc((prev) => {
+        const list = prev[targetPhcId] || [];
+        return {
+          ...prev,
+          [targetPhcId]: list.map((r) =>
+            r.date === targetDate && entries.some((e: any) => e.staffId === r.staffId)
+              ? { ...r, syncStatus: 'SYNCED' }
+              : r
+          )
+        };
+      });
     }
     return true;
   };
@@ -1479,8 +1859,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // Audio Transcription using gemini-3.5-transcribe
-  const transcribeAudio = async (audioBlob: Blob): Promise<string> => {
+  // Audio Transcription using language-aware Gemini multimodal audio pipeline (en-IN, hi-IN, ta-IN, te-IN)
+  const transcribeAudio = async (
+    audioBlob: Blob,
+    languageParam?: RegisterVoiceBcp47Locale | string,
+    browserTranscript: string = ''
+  ): Promise<string> => {
     setIsTranscribing(true);
     try {
       // Convert Blob to Base64
@@ -1497,11 +1881,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const audioBase64 = await base64Promise;
 
       const mimeType = audioBlob.type || 'audio/webm';
+      const resolvedLocale: RegisterVoiceBcp47Locale = getVoiceBcp47Locale(languageParam || language);
 
       const res = await fetch('/api/voice/transcribe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ audioBase64, mimeType })
+        body: JSON.stringify({
+          audioBase64,
+          mimeType,
+          language: resolvedLocale,
+          locale: resolvedLocale,
+          browserTranscript
+        })
       });
 
       if (!res.ok) {
@@ -1519,6 +1910,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             id: logId,
             userId: currentUser.uid,
             transcript,
+            language: resolvedLocale,
+            locale: resolvedLocale,
             createdAt: new Date().toISOString()
           });
         } catch (err) {
@@ -1526,10 +1919,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       }
 
-      notify('Audio successfully transcribed via gemini-3.5-transcribe.');
+      notify(`Audio transcribed (${resolvedLocale}) via ${data.modelUsed || 'Gemini Audio ASR'}.`);
       return transcript;
     } catch (error) {
       console.error('Audio transcription error:', error);
+      if (browserTranscript.trim()) {
+        return browserTranscript.trim();
+      }
       notify('Audio transcription error. Please try speaking again.');
       return '';
     } finally {
@@ -1621,7 +2017,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         body: JSON.stringify({
           messages: apiMessages,
           persona,
-          taskComplexity
+          taskComplexity,
+          phcId: selectedPHC.id,
+          phcName: selectedPHC.name
         })
       });
 
@@ -1680,6 +2078,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Medicine consumption
   const consumeMedicine = async (medicineId: string, quantity: number, reason: string): Promise<boolean> => {
+    if (!inchargeSessionRef.current) {
+      pendingProtectedActionRef.current = () => {
+        void consumeMedicine(medicineId, quantity, reason);
+      };
+      setPendingActionLabel(`Dispense / adjust medicine stock (-${quantity} units)`);
+      setAuthModalTab('signin');
+      setIsAuthModalOpen(true);
+      return false;
+    }
     const qty = Number(quantity);
     if (!Number.isFinite(qty) || qty <= 0) {
       notify('Invalid quantity: quantity to dispense must be greater than 0.');
@@ -1799,6 +2206,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     date: string;
     batch: string;
   }): Promise<{ ok: boolean; matchedMedicineId?: string; matchedMedicineName?: string; error?: string }> => {
+    if (!inchargeSessionRef.current) {
+      pendingProtectedActionRef.current = () => {
+        void verifyOCRRecord(record);
+      };
+      setPendingActionLabel(`Commit OCR stock record (${record.medicineName})`);
+      setAuthModalTab('signin');
+      setIsAuthModalOpen(true);
+      return { ok: false, error: 'Authorized access required.' };
+    }
     const qty = Number(record.quantity);
     if (!Number.isFinite(qty) || qty <= 0) {
       const errMsg = `Invalid quantity (${record.quantity}) for "${record.medicineName}": quantity must be greater than 0.`;
@@ -1939,6 +2355,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     admissions?: number;
     notes?: string;
   }): Promise<boolean> => {
+    if (!inchargeSessionRef.current) {
+      pendingProtectedActionRef.current = () => {
+        void registerPHCData(payload);
+      };
+      setPendingActionLabel('Update PHC inventory and operational telemetry');
+      setAuthModalTab('signin');
+      setIsAuthModalOpen(true);
+      return false;
+    }
     if (!isOfflineMode) {
       try {
         const res = await fetch('/api/phc/register-data', {
@@ -2077,6 +2502,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     justification: string;
     confirmedByUser?: boolean;
   }): Promise<boolean> => {
+    if (!inchargeSessionRef.current) {
+      pendingProtectedActionRef.current = () => {
+        void createOrder(orderData);
+      };
+      setPendingActionLabel(`Create replenishment order for ${orderData.medicineName}`);
+      setAuthModalTab('signin');
+      setIsAuthModalOpen(true);
+      return false;
+    }
     const qty = Math.round(Number(orderData.quantityRequested));
     if (!orderData.medicineName || !orderData.medicineName.trim()) {
       notify('Cannot create order: medicine name is required.');
@@ -2301,6 +2735,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       justification: string;
     }>
   ) => {
+    if (!inchargeSessionRef.current) {
+      pendingProtectedActionRef.current = () => {
+        openBulkRestockPreview(customItems);
+      };
+      setPendingActionLabel('Create bulk replenishment indent for low-stock medicines');
+      setAuthModalTab('signin');
+      setIsAuthModalOpen(true);
+      return;
+    }
     const rawList =
       customItems && customItems.length > 0
         ? customItems
@@ -2355,6 +2798,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Advance Order
   const advanceOrder = async (orderId: string): Promise<boolean> => {
+    if (!inchargeSessionRef.current) {
+      pendingProtectedActionRef.current = () => {
+        void advanceOrder(orderId);
+      };
+      setPendingActionLabel(`Approve / advance order #${orderId}`);
+      setAuthModalTab('signin');
+      setIsAuthModalOpen(true);
+      return false;
+    }
     if (!isOfflineMode) {
       try {
         const res = await fetch('/api/orders/advance', {
@@ -2419,6 +2871,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const flow: Record<LogisticsOrder['status'], LogisticsOrder['status']> = {
+      'DRAFT': 'SUBMITTED',
+      'SUBMITTED': 'APPROVED',
       'REQUESTED': 'APPROVAL PENDING',
       'APPROVAL PENDING': 'APPROVED',
       'APPROVED': 'PROCESSING',
@@ -2426,7 +2880,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       'DISPATCHED': 'IN TRANSIT',
       'IN TRANSIT': 'DELIVERED',
       'DELIVERED': 'RECEIVED',
-      'RECEIVED': 'RECEIVED'
+      'RECEIVED': 'RECEIVED',
+      'CANCELLED': 'CANCELLED'
     };
 
     const nextStatus = flow[existingOrder.status];
@@ -2508,6 +2963,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const getActiveMedicalOfficerIdentity = (): string => {
+    if (inchargeSession?.inchargeName) {
+      return `${inchargeSession.inchargeName} (${inchargeSession.designation || 'Medical Officer I/C'})`;
+    }
+    if (currentUser?.displayName) {
+      return `${currentUser.displayName} (Medical Officer)`;
+    }
+    return 'Dr. S.C. Bishnoi (Senior Medical Officer I/C)';
+  };
+
   const approveRedistribution = async (
     id: string,
     customTransfer?: {
@@ -2523,19 +2988,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     },
     confirmedByUser?: boolean
   ): Promise<boolean> => {
+    if (!inchargeSessionRef.current) {
+      pendingProtectedActionRef.current = () => {
+        void approveRedistribution(id, customTransfer, confirmedByUser);
+      };
+      setPendingActionLabel(`Initiate / approve inter-PHC transfer (${id})`);
+      setAuthModalTab('signin');
+      setIsAuthModalOpen(true);
+      return false;
+    }
     const existing = redistributions.find((r) => r.id === id);
     if (
       existing &&
       (existing.status === 'APPROVED' ||
+        existing.status === 'DISPATCHED' ||
         existing.status === 'IN_TRANSIT' ||
+        existing.status === 'RECEIVED' ||
         existing.status === 'COMPLETED' ||
         existing.donorDeducted)
     ) {
-      notify(`Duplicate Transfer Prevented: Transfer ${id} has already been approved (${existing.status}) and applied to demo stock.`);
+      notify(`Duplicate Transfer Prevented: Transfer ${id} has already been approved (${existing.status}) and applied to stock.`);
+      return false;
+    }
+    if (existing && (existing.status === 'REJECTED' || existing.status === 'CANCELLED')) {
+      notify(`Action Blocked: Transfer ${id} has already been marked as ${existing.status} and cannot trigger a transfer.`);
       return false;
     }
 
-    // Require Preview & Explicit Confirmation before approving any Inter-PHC Transfer
+    // Require Medical Officer Review before approving or rejecting any Inter-PHC Transfer Recommendation
     if (!confirmedByUser) {
       const previewMedName = existing?.medicineName || customTransfer?.medicineName || 'Essential Medicine';
       const previewQty =
@@ -2561,7 +3041,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setSafetyModalChecked(false);
       setPendingSafetyAction({
         kind: 'REDISTRIBUTION_TRANSFER',
-        title: 'Confirm Simulated Inter-PHC Medicine Transfer',
+        title: 'Review AI Redistribution Recommendation',
         redistributionId: id,
         customTransferPayload: customTransfer,
         items: [
@@ -2572,11 +3052,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             priority: 'URGENT',
             source: `${previewSource} (Surplus Donor PHC)`,
             destination: `${previewDest} (Receiving PHC)`,
-            estimatedDelivery: `~${previewHours} Hours Road Transit (${previewDist} km — Simulated Inter-PHC Dispatch)`,
+            estimatedDelivery: `~${previewHours} Hours Road Transit (${previewDist} km — Inter-PHC Dispatch)`,
             justification:
               existing?.clinicalRationale ||
               customTransfer?.clinicalRationale ||
-              'Simulated lateral surplus balancing transfer',
+              'Lateral surplus balancing transfer recommendation',
             isDuplicate: false
           }
         ]
@@ -2584,12 +3064,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
 
+    const reviewerActor = getActiveMedicalOfficerIdentity();
+
     if (!isOfflineMode) {
       try {
         const res = await fetch('/api/redistributions/approve', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id, customTransfer })
+          body: JSON.stringify({ id, customTransfer, actor: reviewerActor })
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -2606,6 +3088,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               ? prev.map((r) => (r.id === data.redistribution.id ? data.redistribution : r))
               : [data.redistribution, ...prev];
           });
+        }
+        if (data.auditEntry) {
+          setSupplyChainAuditLog((prev) => [data.auditEntry, ...prev.filter((a) => a.transactionId !== data.auditEntry.transactionId)]);
         }
 
         const invRes = await fetch(`/api/inventory?phcId=${encodeURIComponent(selectedPHC.id)}`);
@@ -2638,9 +3123,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
 
         notify(
-          `Authorized inter-PHC transfer of ${
+          `Approved by ${reviewerActor}: inter-PHC transfer of ${
             data.redistribution?.recommendedTransferQuantity || customTransfer?.transferQuantity || ''
-          } units of ${data.redistribution?.medicineName || customTransfer?.medicineName} approved. Donor & recipient ledgers updated.`
+          } units of ${data.redistribution?.medicineName || customTransfer?.medicineName}. Donor & recipient ledgers updated.`
         );
         return true;
       } catch {
@@ -2717,6 +3202,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const nowIso = new Date().toISOString();
+    const txnId = `TXN-${Date.now()}`;
+    const prevStatus = existing?.status || 'PENDING_REVIEW';
+    const donorLabel = existing?.sourcePHCName || existing?.sourcePHC?.name || customTransfer?.sourcePHCName || 'Donor PHC';
+    const recipientLabel = existing?.destinationPHCName || existing?.targetPHC?.name || customTransfer?.targetPHCName || selectedPHC.name;
+    const historyEntry: StatusTransitionRecord = {
+      transactionId: txnId,
+      previousStatus: prevStatus,
+      newStatus: 'APPROVED',
+      timestamp: nowIso,
+      actor: reviewerActor,
+      note: `Approved by ${reviewerActor}: deducted -${transferQty} units from ${donorLabel} & credited +${transferQty} units to ${recipientLabel}`
+    };
+    const auditEntry: SupplyChainAuditEntry = {
+      transactionId: txnId,
+      entityId: id,
+      entityType: 'INTER_PHC_TRANSFER',
+      medicineName: medName,
+      quantity: transferQty,
+      unit: 'Units',
+      source: donorLabel,
+      destination: recipientLabel,
+      timestamp: nowIso,
+      previousStatus: prevStatus,
+      newStatus: 'APPROVED',
+      actor: reviewerActor,
+      stockImpactSummary: historyEntry.note
+    };
+    setSupplyChainAuditLog((prev) => [auditEntry, ...prev]);
+
     if (existing) {
       setRedistributions((prev) =>
         prev.map((r) =>
@@ -2726,7 +3240,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 status: 'APPROVED',
                 donorDeducted: true,
                 receiverCredited: true,
-                approvedAt: nowIso
+                reviewedBy: reviewerActor,
+                reviewedAt: nowIso,
+                approvedBy: reviewerActor,
+                approvedAt: nowIso,
+                statusHistory: [...(r.statusHistory || []), historyEntry]
               }
             : r
         )
@@ -2746,16 +3264,138 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         status: 'APPROVED',
         donorDeducted: true,
         receiverCredited: true,
-        approvedAt: nowIso
+        reviewedBy: reviewerActor,
+        reviewedAt: nowIso,
+        approvedBy: reviewerActor,
+        approvedAt: nowIso,
+        statusHistory: [historyEntry]
       };
       setRedistributions((prev) => [newRedist, ...prev]);
     }
 
-    notify('Inter-facility redistribution approved and applied to local stock.');
+    notify(`Approved by ${reviewerActor}: inter-facility redistribution applied to local stock.`);
+    return true;
+  };
+
+  const rejectRedistribution = async (id: string, reason?: string): Promise<boolean> => {
+    if (!inchargeSessionRef.current) {
+      pendingProtectedActionRef.current = () => {
+        void rejectRedistribution(id, reason);
+      };
+      setPendingActionLabel(`Reject inter-PHC transfer recommendation (${id})`);
+      setAuthModalTab('signin');
+      setIsAuthModalOpen(true);
+      return false;
+    }
+    const existing = redistributions.find((r) => r.id === id);
+    if (!existing) {
+      notify(`Redistribution recommendation #${id} not found.`);
+      return false;
+    }
+    if (
+      existing.status !== 'PENDING_REVIEW' &&
+      existing.status !== 'PROPOSED'
+    ) {
+      notify(`Cannot reject recommendation #${id}: current status is ${existing.status}.`);
+      return false;
+    }
+
+    const reviewerActor = getActiveMedicalOfficerIdentity();
+    const cleanReason = (reason || '').trim() || 'Rejected by Medical Officer during clinical review';
+
+    if (!isOfflineMode) {
+      try {
+        const res = await fetch('/api/redistributions/advance', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id,
+            targetStatus: 'REJECTED',
+            reason: cleanReason,
+            actor: reviewerActor
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          notify(data.error || `Failed to reject recommendation #${id}.`);
+          return false;
+        }
+        if (Array.isArray(data.allRedistributions)) {
+          setRedistributions(data.allRedistributions);
+        } else if (data.redistribution) {
+          setRedistributions((prev) => prev.map((r) => (r.id === id ? data.redistribution : r)));
+        }
+        if (data.auditEntry) {
+          setSupplyChainAuditLog((prev) => [data.auditEntry, ...prev.filter((a) => a.transactionId !== data.auditEntry.transactionId)]);
+        }
+        notify(`Recommendation #${id} rejected by ${reviewerActor}. No stock or transfer executed.`);
+        return true;
+      } catch {
+        // Fall through to offline rejection update
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    const txnId = `TXN-${Date.now()}`;
+    const donorLabel = existing.sourcePHCName || existing.sourcePHC?.name || 'Donor PHC';
+    const recipientLabel = existing.destinationPHCName || existing.targetPHC?.name || 'Recipient PHC';
+    const qty = existing.recommendedTransferQuantity || existing.transferQuantity || 0;
+    const historyEntry: StatusTransitionRecord = {
+      transactionId: txnId,
+      previousStatus: existing.status,
+      newStatus: 'REJECTED',
+      timestamp: nowIso,
+      actor: reviewerActor,
+      note: `Transfer rejected by ${reviewerActor} (${cleanReason}); no stock deducted or transferred`
+    };
+    const auditEntry: SupplyChainAuditEntry = {
+      transactionId: txnId,
+      entityId: id,
+      entityType: 'INTER_PHC_TRANSFER',
+      medicineName: existing.medicineName,
+      quantity: qty,
+      unit: 'Units',
+      source: donorLabel,
+      destination: recipientLabel,
+      timestamp: nowIso,
+      previousStatus: existing.status,
+      newStatus: 'REJECTED',
+      actor: reviewerActor,
+      stockImpactSummary: historyEntry.note,
+      notes: cleanReason
+    };
+    setSupplyChainAuditLog((prev) => [auditEntry, ...prev]);
+
+    setRedistributions((prev) =>
+      prev.map((r) =>
+        r.id === id
+          ? {
+              ...r,
+              status: 'REJECTED',
+              reviewedBy: reviewerActor,
+              reviewedAt: nowIso,
+              rejectedBy: reviewerActor,
+              rejectedAt: nowIso,
+              rejectionReason: cleanReason,
+              statusHistory: [...(r.statusHistory || []), historyEntry]
+            }
+          : r
+      )
+    );
+    notify(`Recommendation #${id} rejected by ${reviewerActor}. No stock or transfer executed.`);
     return true;
   };
 
   const advanceRedistribution = async (id: string): Promise<boolean> => {
+    if (!inchargeSessionRef.current) {
+      pendingProtectedActionRef.current = () => {
+        void advanceRedistribution(id);
+      };
+      setPendingActionLabel(`Advance inter-PHC transfer (${id})`);
+      setAuthModalTab('signin');
+      setIsAuthModalOpen(true);
+      return false;
+    }
     const existing = redistributions.find((r) => r.id === id);
     if (!existing) {
       notify(`Redistribution #${id} not found.`);
@@ -2771,7 +3411,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const res = await fetch('/api/redistributions/advance', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id })
+          body: JSON.stringify({ id, actor: getActiveMedicalOfficerIdentity() })
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -2782,6 +3422,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setRedistributions(data.allRedistributions);
         } else if (data.redistribution) {
           setRedistributions((prev) => prev.map((r) => (r.id === id ? data.redistribution : r)));
+        }
+        if (data.auditEntry) {
+          setSupplyChainAuditLog((prev) => [data.auditEntry, ...prev.filter((a) => a.transactionId !== data.auditEntry.transactionId)]);
         }
         const invRes = await fetch(`/api/inventory?phcId=${encodeURIComponent(selectedPHC.id)}`);
         if (invRes.ok) {
@@ -2795,21 +3438,76 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const transitionMap: Record<RedistributionOpportunity['status'], RedistributionOpportunity['status']> = {
-      'PENDING_REVIEW': 'PROPOSED',
+      'PENDING_REVIEW': 'APPROVED',
       'PROPOSED': 'APPROVED',
-      'APPROVED': 'IN_TRANSIT',
-      'IN_TRANSIT': 'COMPLETED',
-      'COMPLETED': 'COMPLETED'
+      'APPROVED': 'DISPATCHED',
+      'DISPATCHED': 'RECEIVED',
+      'IN_TRANSIT': 'RECEIVED',
+      'RECEIVED': 'RECEIVED',
+      'COMPLETED': 'COMPLETED',
+      'REJECTED': 'REJECTED',
+      'CANCELLED': 'CANCELLED'
     };
     const nextStatus = transitionMap[existing.status];
+    const nowIso = new Date().toISOString();
+    const reviewerActor = getActiveMedicalOfficerIdentity();
+    const txnId = `TXN-${Date.now()}`;
+    const donorLabel = existing.sourcePHCName || existing.sourcePHC?.name || 'Donor PHC';
+    const recipientLabel = existing.destinationPHCName || existing.targetPHC?.name || 'Recipient PHC';
+    const qty = existing.recommendedTransferQuantity || existing.transferQuantity || 0;
+    const historyEntry: StatusTransitionRecord = {
+      transactionId: txnId,
+      previousStatus: existing.status,
+      newStatus: nextStatus,
+      timestamp: nowIso,
+      actor: reviewerActor,
+      note: `Transfer transitioned from ${existing.status} to ${nextStatus}`
+    };
+    const auditEntry: SupplyChainAuditEntry = {
+      transactionId: txnId,
+      entityId: id,
+      entityType: 'INTER_PHC_TRANSFER',
+      medicineName: existing.medicineName,
+      quantity: qty,
+      unit: 'Units',
+      source: donorLabel,
+      destination: recipientLabel,
+      timestamp: nowIso,
+      previousStatus: existing.status,
+      newStatus: nextStatus,
+      actor: reviewerActor,
+      stockImpactSummary: historyEntry.note
+    };
+    setSupplyChainAuditLog((prev) => [auditEntry, ...prev]);
+
     setRedistributions((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, status: nextStatus } : r))
+      prev.map((r) =>
+        r.id === id
+          ? {
+              ...r,
+              status: nextStatus,
+              dispatchedAt: nextStatus === 'DISPATCHED' ? nowIso : r.dispatchedAt,
+              receivedAt: nextStatus === 'RECEIVED' ? nowIso : r.receivedAt,
+              completedAt: nextStatus === 'RECEIVED' ? nowIso : r.completedAt,
+              statusHistory: [...(r.statusHistory || []), historyEntry]
+            }
+          : r
+      )
     );
     notify(`Transfer #${id} transitioned to ${nextStatus}.`);
     return true;
   };
 
   const acknowledgeAlert = async (id: string) => {
+    if (!inchargeSessionRef.current) {
+      pendingProtectedActionRef.current = () => {
+        void acknowledgeAlert(id);
+      };
+      setPendingActionLabel(`Acknowledge operational alert #${id}`);
+      setAuthModalTab('signin');
+      setIsAuthModalOpen(true);
+      return;
+    }
     try {
       if (!isOfflineMode) {
         const res = await fetch('/api/alerts/acknowledge', {
@@ -2864,8 +3562,220 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const toggleConnector = async (id: string, status: 'CONNECTED' | 'NOT CONNECTED' | 'CONFIGURE') => {
+    if (!inchargeSessionRef.current) {
+      pendingProtectedActionRef.current = () => {
+        void toggleConnector(id, status);
+      };
+      setPendingActionLabel(`Modify system integration settings (${id})`);
+      setAuthModalTab('signin');
+      setIsAuthModalOpen(true);
+      return;
+    }
     setConnectors(prev => prev.map(c => c.id === id ? { ...c, status, lastSync: 'Just now' } : c));
     notify(`Integration '${id}' status updated to ${status}.`);
+  };
+
+  const scopedOrders = orders.filter((o) => !o.phcId || o.phcId === selectedPHC.id);
+  const scopedAlerts = alerts.filter((a) => !a.phcId || a.phcId === selectedPHC.id);
+  const scopedOfflineQueue = offlineQueue.filter(
+    (item) => !item.facilityId || item.facilityId === selectedPHC.id
+  );
+
+  // Authorized Medical Officer Staff Attendance Marking (Single or Batch) with Offline Queue & Audit Trail
+  const saveBatchAttendance = async (
+    entries: Array<{ staffId: string; status: AttendanceStatus }>,
+    dateStr?: string
+  ): Promise<boolean> => {
+    if (!entries || entries.length === 0) return false;
+    const cleanDate = dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? dateStr : todayIsoDate;
+
+    if (!inchargeSessionRef.current) {
+      pendingProtectedActionRef.current = async () => {
+        await saveBatchAttendance(entries, cleanDate);
+      };
+      setPendingActionLabel(
+        entries.length === 1
+          ? `Mark staff attendance (${entries[0].staffId}: ${entries[0].status})`
+          : `Save PHC staff attendance (${entries.length} staff records)`
+      );
+      setAuthModalTab('signin');
+      setIsAuthModalOpen(true);
+      return false;
+    }
+
+    const session = inchargeSessionRef.current;
+    const boundPhcId = session.assignedPhcId || session.phcId;
+    const boundPhc = facilities.find((f) => f.id === boundPhcId) || activeAttendancePhc;
+
+    // Security: Prevent logged-in officer from modifying attendance for a different PHC
+    if (selectedPHC.id !== boundPhc.id) {
+      notify(
+        `Access Restricted: Officer ${session.officerId} can only mark attendance for ${boundPhc.name}.`
+      );
+      return false;
+    }
+
+    const officerActor = `${session.officerName || session.inchargeName} (${session.officerId})`;
+    const nowTime = new Date().toTimeString().slice(0, 5) + ' IST';
+    const nowIso = new Date().toISOString();
+    const initialSyncStatus = isOfflineMode ? ('QUEUED' as const) : ('SYNCED' as const);
+
+    const phcRoster = staffByPhc[boundPhc.id] || getFacilityStaffDirectory(boundPhc);
+    const auditEntriesToAdd: SupplyChainAuditEntry[] = [];
+
+    setAttendanceByPhc((prev) => {
+      const existingList = [...(prev[boundPhc.id] || getInitialAttendanceRecordsForPHC(boundPhc, todayIsoDate))];
+
+      for (const item of entries) {
+        const member = phcRoster.find((s) => s.id === item.staffId || s.staffCode === item.staffId);
+        if (!member || member.phcId !== boundPhc.id) continue;
+
+        const existingIdx = existingList.findIndex(
+          (r) => r.staffId === member.id && r.phcId === boundPhc.id && r.date === cleanDate
+        );
+        const previousStatus: AttendanceStatus =
+          existingIdx >= 0
+            ? existingList[existingIdx].status
+            : (member.status as AttendanceStatus) || 'NOT_MARKED';
+
+        const updatedRec: StaffAttendanceRecord = {
+          attendanceId:
+            existingIdx >= 0
+              ? existingList[existingIdx].attendanceId
+              : `ATT-${boundPhc.id}-${cleanDate}-${member.id}`,
+          staffId: member.id,
+          staffName: member.name,
+          designation: member.designation || member.role,
+          department: member.department || member.assignedArea,
+          phcId: boundPhc.id,
+          phcName: boundPhc.name,
+          date: cleanDate,
+          status: item.status,
+          previousStatus,
+          markedBy: officerActor,
+          markedByOfficerId: session.officerId,
+          markedAt: nowTime,
+          syncStatus: initialSyncStatus
+        };
+
+        if (existingIdx >= 0) {
+          existingList[existingIdx] = updatedRec;
+        } else {
+          existingList.unshift(updatedRec);
+        }
+
+        auditEntriesToAdd.push({
+          transactionId: `AUD-ATT-${Date.now()}-${Math.floor(100 + Math.random() * 899)}`,
+          entityId: updatedRec.attendanceId,
+          entityType: 'STAFF_ATTENDANCE',
+          medicineName: `${member.name} (${member.designation || member.role})`,
+          quantity: 1,
+          unit: 'Staff',
+          source: boundPhc.name,
+          destination: `Attendance (${cleanDate})`,
+          timestamp: nowIso,
+          previousStatus,
+          newStatus: item.status,
+          actor: officerActor,
+          stockImpactSummary: `Staff ${member.id} attendance updated: ${previousStatus} → ${item.status} on ${cleanDate}`,
+          notes: `PHC: ${boundPhc.name} (${boundPhc.id})`
+        });
+      }
+
+      return {
+        ...prev,
+        [boundPhc.id]: existingList
+      };
+    });
+
+    if (auditEntriesToAdd.length > 0) {
+      setSupplyChainAuditLog((prev) => [...auditEntriesToAdd, ...prev]);
+    }
+
+    if (isOfflineMode) {
+      addToOfflineQueue({
+        module: 'attendance',
+        moduleLabel: 'Staff Attendance',
+        action: 'MARK_STAFF_ATTENDANCE',
+        entityName:
+          entries.length === 1
+            ? `Attendance: ${entries[0].staffId} → ${entries[0].status} (${cleanDate})`
+            : `Batch Attendance (${entries.length} staff on ${cleanDate})`,
+        quantity: entries.length,
+        unit: 'Staff',
+        payload: {
+          phcId: boundPhc.id,
+          date: cleanDate,
+          entries,
+          markedBy: officerActor
+        }
+      });
+      notify(t.attendance.attendanceQueuedOffline);
+      return true;
+    }
+
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (session.sessionToken) {
+        headers.Authorization = `Bearer ${session.sessionToken}`;
+      }
+      const res = await fetch('/api/attendance/mark', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          phcId: boundPhc.id,
+          date: cleanDate,
+          entries,
+          markedBy: officerActor,
+          sessionToken: session.sessionToken
+        })
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      notify(t.attendance.attendanceSaved);
+      return true;
+    } catch {
+      // Network error while marking: mark as QUEUED and push to existing Offline Queue
+      setAttendanceByPhc((prev) => {
+        const list = prev[boundPhc.id] || [];
+        return {
+          ...prev,
+          [boundPhc.id]: list.map((r) =>
+            r.date === cleanDate && entries.some((e) => e.staffId === r.staffId)
+              ? { ...r, syncStatus: 'QUEUED' }
+              : r
+          )
+        };
+      });
+      addToOfflineQueue({
+        module: 'attendance',
+        moduleLabel: 'Staff Attendance',
+        action: 'MARK_STAFF_ATTENDANCE',
+        entityName:
+          entries.length === 1
+            ? `Attendance: ${entries[0].staffId} → ${entries[0].status} (${cleanDate})`
+            : `Batch Attendance (${entries.length} staff on ${cleanDate})`,
+        quantity: entries.length,
+        unit: 'Staff',
+        payload: {
+          phcId: boundPhc.id,
+          date: cleanDate,
+          entries,
+          markedBy: officerActor
+        }
+      });
+      notify(t.attendance.attendanceQueuedOffline);
+      return true;
+    }
+  };
+
+  const markStaffAttendance = async (
+    staffId: string,
+    status: AttendanceStatus,
+    dateStr?: string
+  ): Promise<boolean> => {
+    return saveBatchAttendance([{ staffId, status }], dateStr);
   };
 
   return (
@@ -2881,11 +3791,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateFacilityMedicineStock,
         capacity,
         staff,
+        attendanceRecords,
+        markStaffAttendance,
+        saveBatchAttendance,
         workforce,
+        language,
+        setLanguage,
+        t,
         weather,
-        orders,
+        orders: scopedOrders,
         redistributions,
-        alerts,
+        supplyChainAuditLog,
+        alerts: scopedAlerts,
         connectors,
         isOfflineMode,
         toggleOfflineMode,
@@ -2904,10 +3821,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         isAuthModalOpen,
         authModalTab,
         pendingPHCToUnlock,
+        pendingActionLabel,
         openAuthModal,
         closeAuthModal,
         authenticatePHCIncharge,
         signOutIncharge,
+        requireAuthorizedAccess,
 
         // Chat
         chatMessages,
@@ -2931,6 +3850,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         openBulkRestockPreview,
         advanceOrder,
         approveRedistribution,
+        rejectRedistribution,
         advanceRedistribution,
         refreshServerState,
         acknowledgeAlert,
@@ -2940,7 +3860,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         showNotification: notify,
 
         // Local Storage Offline Queue
-        offlineQueue,
+        offlineQueue: scopedOfflineQueue,
         isQueueSyncing,
         queueSyncProgress,
         queueSyncSyncedCount,
@@ -3054,9 +3974,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         <strong className="text-slate-800 font-mono">{item.estimatedDelivery}</strong>
                       </div>
                     </div>
+                    {item.justification && (
+                      <div className="pt-1.5 border-t border-slate-100 text-[11px] text-slate-700">
+                        <span className="text-slate-400 uppercase font-mono text-[10px] block">
+                          AI Clinical Rationale & Explainability
+                        </span>
+                        <span>{item.justification}</span>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
+
+              {pendingSafetyAction.kind === 'REDISTRIBUTION_TRANSFER' && (
+                <div className="px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-2 text-xs">
+                  <span className="text-slate-500 font-medium">Reviewing Medical Officer:</span>
+                  <span className="font-mono font-bold text-slate-900">{getActiveMedicalOfficerIdentity()}</span>
+                </div>
+              )}
 
               {pendingSafetyAction.items.some((i) => !i.isDuplicate) ? (
                 <label className="flex items-start gap-2.5 p-3.5 rounded-xl bg-teal-50/80 border border-teal-200 cursor-pointer select-none">
@@ -3084,6 +4019,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 >
                   Cancel
                 </button>
+
+                {pendingSafetyAction.kind === 'REDISTRIBUTION_TRANSFER' && pendingSafetyAction.redistributionId && (
+                  <button
+                    type="button"
+                    disabled={isSubmittingSafetyModal}
+                    onClick={async () => {
+                      if (!pendingSafetyAction.redistributionId) return;
+                      setIsSubmittingSafetyModal(true);
+                      try {
+                        await rejectRedistribution(
+                          pendingSafetyAction.redistributionId,
+                          'Rejected by Medical Officer during clinical review'
+                        );
+                        setPendingSafetyAction(null);
+                      } finally {
+                        setIsSubmittingSafetyModal(false);
+                      }
+                    }}
+                    className="px-4 py-2 rounded-xl border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-800 font-bold text-xs cursor-pointer transition-colors"
+                  >
+                    Reject Recommendation
+                  </button>
+                )}
 
                 {pendingSafetyAction.items.some((i) => !i.isDuplicate) && (
                   <button
@@ -3130,9 +4088,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     }`}
                   >
                     {isSubmittingSafetyModal
-                      ? 'Submitting Simulated Order...'
+                      ? 'Submitting...'
                       : pendingSafetyAction.kind === 'REDISTRIBUTION_TRANSFER'
-                      ? 'Confirm & Execute Simulated Transfer'
+                      ? 'Approve & Execute Transfer'
                       : `Confirm & Submit Simulated Order${
                           pendingSafetyAction.items.filter((i) => !i.isDuplicate).length > 1
                             ? `s (${pendingSafetyAction.items.filter((i) => !i.isDuplicate).length})`

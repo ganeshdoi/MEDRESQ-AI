@@ -19,8 +19,6 @@ import { useApp } from '../../context/AppContext.tsx';
 import { PHCFacility } from '../../types.ts';
 import {
   INDIA_PHC_DIRECTORY,
-  DATA_GOV_IN_PHC_STATS,
-  RAJASTHAN_WHO_AND_DATAGOV_STATS,
   getWHOSaraAndDataGovDetails,
   PHC_GEO_COORDINATES
 } from '../../data/indiaPHCDirectory.ts';
@@ -28,9 +26,11 @@ import {
   NATIONAL_ESSENTIAL_MEDICINES_LIST
 } from '../../data/nationalEssentialMedicines.ts';
 import { matchesSearchKeywords } from '../../utils/globalSearch.ts';
+import { getDatasetFacilityMetrics } from '../../utils/datasetMetrics.ts';
 
 export const NationalPHCDirectory: React.FC = () => {
-  const { selectedPHC, setSelectedPHC, setActiveModule, showNotification } = useApp();
+  const { selectedPHC, setSelectedPHC, medicines, setActiveModule, showNotification } = useApp();
+  const datasetFacilityMetrics = getDatasetFacilityMetrics();
 
   const [activeTab, setActiveTab] = useState<'rajasthan' | 'phc' | 'nlem'>('rajasthan');
   const [displayMode, setDisplayMode] = useState<'table' | 'cards'>('table');
@@ -201,12 +201,12 @@ export const NationalPHCDirectory: React.FC = () => {
             <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 font-mono">
               <span className="font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded flex items-center gap-1">
                 <Database className="w-3.5 h-3.5 text-amber-700" />
-                <span>Synthetic / Demo PHC Profiles ({INDIA_PHC_DIRECTORY.length} Sample Facilities)</span>
+                <span>Synthetic / Demo PHC Profiles ({INDIA_PHC_DIRECTORY.length} All-India · {rajasthanPHCs.length} Rajasthan)</span>
               </span>
               <span aria-hidden="true">·</span>
               <span className="font-bold text-emerald-800 flex items-center gap-1">
                 <Globe className="w-3.5 h-3.5 text-emerald-700" />
-                <span>NLEM 2022 Essential Medicine Formulary Reference (51 Items)</span>
+                <span>NLEM 2022 Essential Medicine Formulary Reference ({NATIONAL_ESSENTIAL_MEDICINES_LIST.length} Items)</span>
               </span>
             </div>
             <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight mt-1 flex items-center gap-2">
@@ -283,55 +283,55 @@ export const NationalPHCDirectory: React.FC = () => {
           </div>
         </div>
 
-        {/* 2. Rajasthan WHO & data.gov.in Official Statistics Summary */}
+        {/* 2. Canonical Single-Source-of-Truth Dataset Summary Strip */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 mt-4 pt-4 border-t border-slate-100 text-xs">
           <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
-            <span className="text-[10px] uppercase font-bold text-slate-500 font-mono">Rajasthan Total PHCs</span>
+            <span className="text-[10px] uppercase font-bold text-slate-500 font-mono">Rajasthan Sample PHCs</span>
             <div className="text-lg font-bold font-mono text-slate-900 mt-0.5">
-              {RAJASTHAN_WHO_AND_DATAGOV_STATS.totalRajasthanPhcs.toLocaleString()}
+              {datasetFacilityMetrics.rajasthanPhcCount} PHCs
             </div>
             <div className="text-[10px] text-slate-500 mt-0.5 font-mono">
-              Rural: {RAJASTHAN_WHO_AND_DATAGOV_STATS.ruralPhcs.toLocaleString()} · Urban: {RAJASTHAN_WHO_AND_DATAGOV_STATS.urbanPhcsJanArogya}
+              Across {rajasthanDistricts.length} Rajasthan Districts
             </div>
           </div>
 
           <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
-            <span className="text-[10px] uppercase font-bold text-slate-500 font-mono">Rajasthan Sub-Centres</span>
+            <span className="text-[10px] uppercase font-bold text-slate-500 font-mono">All-India Sample PHCs</span>
             <div className="text-lg font-bold font-mono text-sky-700 mt-0.5">
-              {RAJASTHAN_WHO_AND_DATAGOV_STATS.subCentresAndHwcs.toLocaleString()}
+              {datasetFacilityMetrics.samplePhcTotalCount} PHCs
             </div>
             <div className="text-[10px] text-slate-500 mt-0.5 font-mono">
-              CHCs: {RAJASTHAN_WHO_AND_DATAGOV_STATS.communityHealthCentres} · DDWs: {RAJASTHAN_WHO_AND_DATAGOV_STATS.rmsclDistrictDrugWarehouses}
+              {datasetFacilityMetrics.rajasthanPhcCount} RJ · {datasetFacilityMetrics.otherStatesPhcCount} Other States ({availableStates.length} States)
             </div>
           </div>
 
           <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
-            <span className="text-[10px] uppercase font-bold text-slate-500 font-mono">WHO SARA Readiness</span>
+            <span className="text-[10px] uppercase font-bold text-slate-500 font-mono">Network Map Nodes</span>
             <div className="text-lg font-bold font-mono text-emerald-700 mt-0.5">
-              {RAJASTHAN_WHO_AND_DATAGOV_STATS.whoSaraMeanReadinessScore}%
+              {datasetFacilityMetrics.networkMapTotalCount} Nodes
             </div>
             <div className="text-[10px] text-slate-500 mt-0.5 font-mono">
-              WHO 4-Domain PHC Score
+              {datasetFacilityMetrics.samplePhcTotalCount} PHCs + {datasetFacilityMetrics.networkMapUnmappedCount} CHCs/Depots
             </div>
           </div>
 
           <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
-            <span className="text-[10px] uppercase font-bold text-slate-500 font-mono">MNDY Free Medicines</span>
+            <span className="text-[10px] uppercase font-bold text-slate-500 font-mono">NLEM 2022 Reference</span>
             <div className="text-lg font-bold font-mono text-indigo-700 mt-0.5">
-              {RAJASTHAN_WHO_AND_DATAGOV_STATS.mndyFreeMedicineSchemeItems} Drugs
+              {datasetFacilityMetrics.nlemCatalogueCount} Drugs
             </div>
             <div className="text-[10px] text-slate-500 mt-0.5 font-mono">
-              e-Aushadhi RMSCL Supply
+              Primary Healthcare Formulary
             </div>
           </div>
 
           <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
-            <span className="text-[10px] uppercase font-bold text-slate-500 font-mono">WHO PQS Cold Chain</span>
+            <span className="text-[10px] uppercase font-bold text-slate-500 font-mono">Active PHC Inventory</span>
             <div className="text-lg font-bold font-mono text-blue-700 mt-0.5">
-              {RAJASTHAN_WHO_AND_DATAGOV_STATS.whoColdChainPqsCompliancePct}%
+              {medicines.length} Items
             </div>
-            <div className="text-[10px] text-slate-500 mt-0.5 font-mono">
-              eVIN ILR 2°C–8°C Monitored
+            <div className="text-[10px] text-slate-500 mt-0.5 font-mono truncate">
+              Tracked at {selectedPHC.name}
             </div>
           </div>
 
@@ -509,7 +509,7 @@ export const NationalPHCDirectory: React.FC = () => {
                           </td>
                           <td className="py-2.5 px-3">
                             <div className="font-mono font-bold text-emerald-700">
-                              SARA: {whoDetails.whoSaraReadinessScore}% · NLEM: {whoDetails.whoEssentialMedicinesTracerPct}%
+                              Readiness: {whoDetails.whoSaraReadinessScore}% · Buffer: {whoDetails.whoEssentialMedicinesTracerPct}%
                             </div>
                             <div className="text-[10px] text-slate-600">{whoDetails.ilrColdChainStatus}</div>
                           </td>
@@ -521,24 +521,29 @@ export const NationalPHCDirectory: React.FC = () => {
                           </td>
                           <td className="py-2.5 px-3 text-right whitespace-nowrap">
                             <div className="flex items-center justify-end gap-1.5">
-                              {!isCurrent ? (
-                                <button
-                                  type="button"
-                                  onClick={() => handleSelectActivePHC(phc)}
-                                  className="px-2.5 py-1 bg-slate-900 hover:bg-black text-white rounded-md font-bold text-[11px] cursor-pointer transition-colors"
-                                >
-                                  Select PHC
-                                </button>
-                              ) : (
+                              {isCurrent ? (
                                 <span className="px-2.5 py-1 bg-emerald-100 text-emerald-900 rounded-md font-bold text-[11px]">
-                                  Active
+                                  Assigned PHC
+                                </span>
+                              ) : (
+                                <span className="px-2 py-1 bg-slate-100 text-slate-600 rounded-md font-mono text-[10px]">
+                                  Peer Network PHC
                                 </span>
                               )}
                               <button
                                 type="button"
                                 onClick={() => {
-                                  setSelectedPHC(phc);
                                   setActiveModule('map');
+                                  setTimeout(() => {
+                                    window.dispatchEvent(
+                                      new CustomEvent('medresq:global-search', {
+                                        detail: {
+                                          query: phc.name,
+                                          phcId: phc.id
+                                        }
+                                      })
+                                    );
+                                  }, 60);
                                 }}
                                 className="px-2 py-1 bg-sky-100 hover:bg-sky-200 text-sky-900 rounded-md font-bold text-[11px] flex items-center gap-1 cursor-pointer transition-colors"
                               >
@@ -607,7 +612,7 @@ export const NationalPHCDirectory: React.FC = () => {
                         </div>
 
                         <div className="p-2 rounded-lg bg-slate-50 border border-slate-200/80">
-                          <span className="text-slate-500 text-[10px] block">WHO SARA Score</span>
+                          <span className="text-slate-500 text-[10px] block">Demo Readiness</span>
                           <strong className="text-emerald-700 font-bold">{whoDetails.whoSaraReadinessScore}% Ready</strong>
                         </div>
 
@@ -630,11 +635,11 @@ export const NationalPHCDirectory: React.FC = () => {
                           </span>
                         </div>
                         <div className="flex items-center justify-between">
-                          <span>WHO Cold Chain:</span>
+                          <span>Simulated Cold Chain:</span>
                           <span className="font-mono text-slate-700">{whoDetails.ilrColdChainStatus}</span>
                         </div>
                         <div className="flex items-center justify-between">
-                          <span>IDSP Endemic Focus:</span>
+                          <span>Seasonal Demand Focus:</span>
                           <span className="text-slate-700 truncate max-w-[195px]">
                             {whoDetails.idspEndemicSyndromes[0]}
                           </span>
@@ -645,26 +650,30 @@ export const NationalPHCDirectory: React.FC = () => {
                     {/* Actions */}
                     <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2 text-xs">
                       {!isCurrent ? (
-                        <button
-                          type="button"
-                          onClick={() => handleSelectActivePHC(phc)}
-                          className="flex-1 py-1.5 bg-slate-900 hover:bg-black text-white rounded-lg font-bold flex items-center justify-center gap-1 transition-colors cursor-pointer text-[11px]"
-                        >
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>Set as Active PHC</span>
-                        </button>
+                        <span className="flex-1 py-1.5 bg-slate-50 text-slate-600 border border-slate-200 rounded-lg font-mono font-semibold flex items-center justify-center gap-1 text-[11px]">
+                          <span>Peer Network Facility (Read-Only)</span>
+                        </span>
                       ) : (
                         <span className="flex-1 py-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg font-bold flex items-center justify-center gap-1 text-[11px]">
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>Active Session Facility</span>
+                          <span>Assigned Session PHC</span>
                         </span>
                       )}
 
                       <button
                         type="button"
                         onClick={() => {
-                          setSelectedPHC(phc);
                           setActiveModule('map');
+                          setTimeout(() => {
+                            window.dispatchEvent(
+                              new CustomEvent('medresq:global-search', {
+                                detail: {
+                                  query: phc.name,
+                                  phcId: phc.id
+                                }
+                              })
+                            );
+                          }, 60);
                         }}
                         className="px-3 py-1.5 bg-sky-100 hover:bg-sky-200 text-sky-900 rounded-lg font-bold flex items-center gap-1 transition-colors cursor-pointer text-[11px]"
                         title="View on Interactive GIS Map"

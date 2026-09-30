@@ -316,11 +316,59 @@ export const WhyThisAlertModal: React.FC<WhyThisAlertModalProps> = ({
             </div>
           </div>
 
+          {/* 4-Stage Decision-Support Provenance Strip (Observed -> Calculated -> Forecast -> Recommendation) */}
+          <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-slate-800 text-[11px] uppercase tracking-wider">
+                Decision-Support Provenance (Deterministic vs. Forecast Signal)
+              </span>
+              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-slate-200 text-slate-800">
+                Human Review Required
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+              <div className="p-2 rounded-lg bg-white border border-slate-200">
+                <span className="font-mono font-bold text-[10px] uppercase text-slate-600 block">
+                  1. OBSERVED DATA (Recorded Ledger)
+                </span>
+                <span className="text-slate-800">
+                  Usable Stock: <strong>{safeStock} {unit}</strong> (expired excluded) • Historical Avg: <strong>{safeAvgDaily} {unit}/day</strong>
+                </span>
+              </div>
+              <div className="p-2 rounded-lg bg-white border border-indigo-200">
+                <span className="font-mono font-bold text-[10px] uppercase text-indigo-700 block">
+                  2. CALCULATED (Deterministic Local Math)
+                </span>
+                <span className="text-slate-800">
+                  Runway: <strong>{runwayDays !== null ? `${runwayDays}d` : 'N/A'}</strong> vs Lead Time <strong>{safeLeadTime}d</strong> + Buffer <strong>{safeBuffer}d</strong>
+                </span>
+              </div>
+              <div className="p-2 rounded-lg bg-white border border-amber-200">
+                <span className="font-mono font-bold text-[10px] uppercase text-amber-800 block">
+                  3. FORECAST / DEMAND SIGNAL
+                </span>
+                <span className="text-slate-800">
+                  Projected Burn: <strong>{safeForecastDemand} {unit}/day</strong> ({recentTrendPercent >= 0 ? `+${recentTrendPercent}%` : `${recentTrendPercent}%`} seasonal/trend shift)
+                </span>
+              </div>
+              <div className="p-2 rounded-lg bg-white border border-emerald-200">
+                <span className="font-mono font-bold text-[10px] uppercase text-emerald-800 block">
+                  4. RECOMMENDATION (Decision Support)
+                </span>
+                <span className="text-slate-800">
+                  {deficitUnits > 0
+                    ? `Review replenishment (+${deficitUnits} ${unit}) or peer PHC transfer via Medical Officer approval.`
+                    : `Monitor FEFO dispensing queue; no immediate emergency indent required.`}
+                </span>
+              </div>
+            </div>
+          </div>
+
           {/* Detailed Mathematical Explanation Accordion / Callout */}
           <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs space-y-2">
             <div className="font-bold text-slate-800 flex items-center gap-1.5 text-[11px]">
               <Info className="w-3.5 h-3.5 text-slate-500" />
-              <span>Step-by-Step Computational Audit (Configurable Demo Thresholds)</span>
+              <span>Step-by-Step Deterministic Calculation Audit (Local Code — Not LLM Generated)</span>
             </div>
             <ul className="space-y-1.5 text-[11px] text-slate-600 font-mono">
               <li className="flex items-start gap-1.5">

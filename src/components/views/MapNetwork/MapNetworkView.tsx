@@ -52,6 +52,11 @@ import {
 import { evaluateNetworkMapFacilities } from '../../../utils/inventoryForecast.ts';
 import { matchesSearchKeywords } from '../../../utils/globalSearch.ts';
 import {
+  DATA_MODE_CONFIG,
+  getDatasetFacilityMetrics,
+  getCanonicalNetworkMapMetrics
+} from '../../../utils/datasetMetrics.ts';
+import {
   EMERGENCY_CIRCUITS_PRESETS,
   INTER_PHC_CORRIDORS
 } from '../../../data/emergencyCircuitsData.ts';
@@ -94,6 +99,8 @@ export const MapNetworkView: React.FC = () => {
       [selectedPHC.id]: medicines
     };
   }, [facilityInventories, selectedPHC.id, medicines]);
+
+  const datasetFacilityMetrics = useMemo(() => getDatasetFacilityMetrics(), []);
 
   // Evaluate all mapped facilities deterministically from their current inventory and configured thresholds
   const facilities = useMemo<NetworkFacility[]>(() => {
@@ -180,7 +187,11 @@ export const MapNetworkView: React.FC = () => {
     );
   });
   const [routeDestination, setRouteDestination] = useState<NetworkFacility | null>(() => {
-    return RAJASTHAN_NETWORK_FACILITIES.find((f) => f.id === 'rmscl-mandore') || null;
+    return (
+      RAJASTHAN_NETWORK_FACILITIES.find((f) => f.id === 'phc-mandore') ||
+      RAJASTHAN_NETWORK_FACILITIES.find((f) => f.id === 'phc-bhopalgarh') ||
+      null
+    );
   });
 
   // Sync active PHC selection and live inventory updates with map focus
@@ -492,27 +503,16 @@ export const MapNetworkView: React.FC = () => {
   const liveDistance = directionsData?.distanceText || (fallbackRouteCalculations ? `${fallbackRouteCalculations.roadKm} km` : 'Computing...');
   const liveDuration = directionsData?.durationText || (fallbackRouteCalculations ? `${fallbackRouteCalculations.travelTimeMins} mins` : 'Computing...');
 
-  // Compute active counts for critical, warning, normal, surplus, and unknown facilities from calculated inventory assessment
+  // Compute active counts for critical, warning, normal, surplus, and unknown facilities from centralized evaluator
   const riskCounts = useMemo(() => {
-    let critical = 0;
-    let warning = 0;
-    let normal = 0;
-    let surplus = 0;
-    let unknown = 0;
-    facilities.forEach((f) => {
-      if (f.isInventoryMatched === false || f.assessedRiskCategory === 'UNKNOWN') {
-        unknown++;
-      } else if (f.assessedRiskCategory === 'CRITICAL' || f.medicineRisk === 'CRITICAL_DEFICIT') {
-        critical++;
-      } else if (f.assessedRiskCategory === 'WARNING' || f.medicineRisk === 'BUFFER_DEPLETING') {
-        warning++;
-      } else if (f.assessedRiskCategory === 'SURPLUS' || f.medicineRisk === 'SURPLUS_AVAILABLE') {
-        surplus++;
-      } else {
-        normal++;
-      }
-    });
-    return { critical, warning, normal, surplus, unknown };
+    const metrics = getCanonicalNetworkMapMetrics(facilities);
+    return {
+      critical: metrics.criticalCount,
+      warning: metrics.warningCount,
+      normal: metrics.normalCount,
+      surplus: metrics.surplusCount,
+      unknown: metrics.unknownCount
+    };
   }, [facilities]);
 
   const activeAdjustmentMedicineName = useMemo(() => {
@@ -579,15 +579,17 @@ export const MapNetworkView: React.FC = () => {
                 Network Stock Map
               </span>
               <span className="text-xs text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded font-mono font-semibold">
-                DEMO / SIMULATED INVENTORY DATA • Deterministic Threshold Assessment
+                {DATA_MODE_CONFIG.datasetBadgeLabel} • Deterministic Threshold Assessment
               </span>
             </div>
             <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight mt-1 flex items-center gap-2">
               <MapPin className="w-5 h-5 text-sky-600" />
-              <span>Network Stock Map &amp; Inter-PHC Transfer Dispatch ({facilities.length} Facilities)</span>
+              <span>
+                Network Stock Map &amp; Inter-PHC Transfer Dispatch ({datasetFacilityMetrics.totalDemoPhcProfilesCount} Demo PHC Profiles: {datasetFacilityMetrics.rajasthanPhcsCount} Rajasthan PHCs)
+              </span>
             </h1>
             <p className="text-xs text-slate-600 mt-0.5">
-              Each mapped PHC's status is calculated directly from its current usable inventory and configured thresholds (`minThreshold`, `maxThreshold`, and days of cover). Unmapped facilities display <strong>UNKNOWN / UNAVAILABLE</strong> status rather than inventing a shortage or surplus.
+              Plots all <strong>{datasetFacilityMetrics.totalDemoPhcProfilesCount} total demo PHC profiles</strong> (<strong>{datasetFacilityMetrics.rajasthanPhcsCount} Rajasthan PHCs</strong> + <strong>{datasetFacilityMetrics.otherStatesDemoPhcsCount} across other states</strong>) tracking <strong>{datasetFacilityMetrics.essentialMedicinesNlemCount} NLEM essential medicines</strong> per facility, with active facility <strong>{selectedPHC.name}</strong> synchronized in real time.
             </p>
           </div>
 

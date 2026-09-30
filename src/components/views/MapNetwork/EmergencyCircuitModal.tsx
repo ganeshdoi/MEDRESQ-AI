@@ -65,10 +65,10 @@ export const EmergencyCircuitModal: React.FC<EmergencyCircuitModalProps> = ({
 
   // Custom Route Builder State
   const [customOriginId, setCustomOriginId] = useState<string>(
-    currentOrigin?.id || 'rmscl-mandore'
+    currentOrigin?.id || 'phc-mandore'
   );
   const [customDestinationId, setCustomDestinationId] = useState<string>(
-    currentDestination?.id || 'chc-baori'
+    currentDestination?.id || 'phc-bhopalgarh'
   );
   const [customWaypointIds, setCustomWaypointIds] = useState<string[]>(
     currentWaypoints.length > 0

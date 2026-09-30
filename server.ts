@@ -1,8 +1,24 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { GoogleGenAI } from '@google/genai';
 import Tesseract from 'tesseract.js';
+import {
+  resolvePHCByOfficerId,
+  createBoundInchargeSession,
+  createDemoOfficerSession,
+  type AuthenticatedInchargeSession,
+  type PHCInchargeAccount
+} from './src/utils/phcAuthDirectory.ts';
+import { requireAuth, type AuthRequest } from './src/middleware/auth.ts';
+import {
+  getOrCreateUser,
+  getUsers,
+  recordAuditLogToCloudSql,
+  getAuditLogsByPhcFromCloudSql,
+  upsertLogisticsOrderToCloudSql
+} from './src/db/users.ts';
 import {
   FACILITIES,
   INITIAL_MEDICINES,
@@ -14,10 +30,16 @@ import {
   INITIAL_REDISTRIBUTION,
   INITIAL_ALERTS,
   INTEGRATION_CONNECTORS,
-  SAMPLE_OCR_PRESETS
+  SAMPLE_OCR_PRESETS,
+  getFacilityStaffDirectory,
+  getInitialAttendanceRecordsForPHC
 } from './src/data/mockData.ts';
 import { generateEssentialMedicinesForPHC } from './src/data/nationalEssentialMedicines.ts';
 import { resolveMedicineMatch } from './src/utils/medicineMatcher.ts';
+import {
+  parsePhysicalRegisterVoiceCommand,
+  resolveVoiceLanguageConfig
+} from './src/utils/registerVoiceCommandParser.ts';
 import { applyFefoStockAdjustment, evaluateMedicineThresholdAndReplenishment } from './src/utils/inventoryForecast.ts';
 import {
   getCurrentAppDate,
@@ -33,10 +55,80 @@ import type {
   MedicineItem,
   OperationalAlert,
   OrderStatus,
+  PHCFacility,
   RedistributionOpportunity,
   RedistributionStatus,
-  SupplyChainAuditEntry
+  SupplyChainAuditEntry,
+  StaffMember,
+  StaffAttendanceRecord,
+  AttendanceStatus
 } from './src/types.ts';
+
+/**
+ * Structured Google Cloud Logging helper.
+ * Emits single-line JSON records compatible with Cloud Run / Cloud Logging and strips sensitive keys.
+ */
+function logCloudEvent(
+  severity: 'INFO' | 'WARNING' | 'ERROR',
+  component: string,
+  message: string,
+  metadata?: Record<string, unknown>
+): void {
+  const safeMeta: Record<string, unknown> = {};
+  if (metadata) {
+    for (const [key, val] of Object.entries(metadata)) {
+      if (/password|secret|apikey|api_key|token|authorization|credential/i.test(key)) {
+        continue;
+      }
+      safeMeta[key] = val;
+    }
+  }
+  const entry = {
+    severity,
+    component,
+    message,
+    timestamp: new Date().toISOString(),
+    ...safeMeta
+  };
+  if (severity === 'ERROR') {
+    console.error(JSON.stringify(entry));
+  } else if (severity === 'WARNING') {
+    console.warn(JSON.stringify(entry));
+  } else {
+    console.log(JSON.stringify(entry));
+  }
+}
+
+/**
+ * Server-only SHA-256 digest verification for PHC Officer Demo Credentials.
+ * Keeps password verification logic strictly on the server.
+ */
+function computeServerCredentialDigest(officerId: string, rawSecret: string): string {
+  return crypto
+    .createHash('sha256')
+    .update(`MEDRESQ_SERVER_AUTH_V1:${officerId.toUpperCase()}:${rawSecret.trim().toUpperCase()}`)
+    .digest('hex');
+}
+
+function verifyServerOfficerCredential(
+  phc: PHCFacility,
+  account: PHCInchargeAccount,
+  enteredPassword: string
+): boolean {
+  const clean = enteredPassword.trim();
+  if (!clean) return false;
+  const enteredDigest = computeServerCredentialDigest(account.officerId, clean);
+  const allowedCandidates = [
+    `${account.officerId}@PHC`,
+    `${account.officerId}-DEMO`,
+    account.officerId,
+    phc.code,
+    ...(process.env.MEDRESQ_ADMIN_PASSWORD ? [process.env.MEDRESQ_ADMIN_PASSWORD.trim()] : [])
+  ];
+  return allowedCandidates.some(
+    (candidate) => computeServerCredentialDigest(account.officerId, candidate) === enteredDigest
+  );
+}
 
 function cloneDeep<T>(val: T): T {
   return JSON.parse(JSON.stringify(val));
@@ -123,18 +215,32 @@ function isGeminiModelAvailable(modelName: string): boolean {
 function recordGeminiModelError(modelName: string, err: unknown): void {
   const msg = String((err as any)?.message || err || '');
   const status = (err as any)?.status || (err as any)?.code;
-  if (status === 429 || msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('quota')) {
+  logCloudEvent('WARNING', 'ai.gemini', `Gemini model invocation failed for ${modelName}`, {
+    modelName,
+    statusCode: status || 'UNKNOWN',
+    reason: msg.replace(/AIza[0-9A-Za-z\-_]+/g, '[REDACTED]').slice(0, 180)
+  });
+  if (
+    status === 429 ||
+    status === 503 ||
+    msg.includes('429') ||
+    msg.includes('503') ||
+    msg.includes('RESOURCE_EXHAUSTED') ||
+    msg.includes('UNAVAILABLE') ||
+    msg.includes('overloaded') ||
+    msg.includes('quota')
+  ) {
     const cooldownUntil = Date.now() + 15 * 60 * 1000;
     modelQuotaCooldownUntil.set(modelName, cooldownUntil);
-    if (modelName === 'gemini-3.8-flash' || modelName === 'gemini-flash-latest') {
-      modelQuotaCooldownUntil.set('gemini-3.8-flash', cooldownUntil);
+    if (modelName === 'gemini-3-flash-preview' || modelName === 'gemini-flash-latest') {
+      modelQuotaCooldownUntil.set('gemini-3-flash-preview', cooldownUntil);
       modelQuotaCooldownUntil.set('gemini-flash-latest', cooldownUntil);
     }
   }
 }
 
 async function generateGeminiJson(ai: GoogleGenAI, prompt: string): Promise<any | null> {
-  const modelsToTry = ['gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
+  const modelsToTry = ['gemini-3.1-flash-lite-preview', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
   for (const modelName of modelsToTry) {
     if (!isGeminiModelAvailable(modelName)) continue;
     try {
@@ -180,6 +286,219 @@ async function startServer() {
     res.json(FACILITIES);
   });
 
+  // Server-side PHC In-Charge Officer Authentication Session Registry
+  const activeOfficerSessions = new Map<
+    string,
+    {
+      session: AuthenticatedInchargeSession;
+      phcId: string;
+      createdAt: string;
+    }
+  >();
+
+  // Authenticate PHC In-Charge Officer by Officer ID + Password (server-side digest check)
+  app.post('/api/auth/login', (req, res) => {
+    const { officerId, password, rememberDevice, phcId } = req.body || {};
+    const rawOfficerId = typeof officerId === 'string' ? officerId.trim() : '';
+    const fallbackId = typeof phcId === 'string' && phcId.trim() ? phcId.trim() : 'OSN001';
+    const cleanOfficerId = rawOfficerId || fallbackId;
+    const cleanPassword = typeof password === 'string' ? password.trim() : '';
+
+    if (!cleanPassword) {
+      logCloudEvent('WARNING', 'auth.phc_login', 'Authentication failed: missing password', {
+        officerId: cleanOfficerId || 'MISSING'
+      });
+      return res.status(400).json({
+        ok: false,
+        error: 'Password is required to authenticate.'
+      });
+    }
+
+    const resolved = resolvePHCByOfficerId(cleanOfficerId, FACILITIES);
+    if (!resolved) {
+      logCloudEvent('WARNING', 'auth.phc_login', 'Authentication failed: unknown Officer ID', {
+        officerId: cleanOfficerId
+      });
+      return res.status(401).json({
+        ok: false,
+        error: 'Incorrect password. Please try again.'
+      });
+    }
+
+    const { phc, account } = resolved;
+    const isPasswordValid = verifyServerOfficerCredential(phc, account, cleanPassword);
+    if (!isPasswordValid) {
+      logCloudEvent('WARNING', 'auth.phc_login', 'Authentication failed: invalid credential for Officer ID', {
+        officerId: account.officerId,
+        assignedPhcId: phc.id
+      });
+      return res.status(401).json({
+        ok: false,
+        error: 'Incorrect password. Please try again.'
+      });
+    }
+
+    const sessionToken = `sess_${crypto.randomBytes(16).toString('hex')}`;
+    const loginTimestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const session = createBoundInchargeSession(phc, account, {
+      sessionToken,
+      rememberDevice: Boolean(rememberDevice),
+      loginTimestamp,
+      loginMode: 'OFFICER_LOGIN',
+      isDemoAccount: false
+    });
+
+    activeOfficerSessions.set(sessionToken, {
+      session,
+      phcId: phc.id,
+      createdAt: new Date().toISOString()
+    });
+
+    logCloudEvent('INFO', 'auth.phc_login', 'PHC In-Charge Officer authenticated and bound to facility', {
+      officerId: account.officerId,
+      assignedPhcId: phc.id,
+      assignedPhcName: phc.name,
+      loginMode: 'OFFICER_LOGIN'
+    });
+
+    getOrCreateUser(`officer_${account.officerId.toLowerCase()}`, account.inchargeEmail, {
+      officerId: account.officerId,
+      officerName: account.officerName,
+      designation: account.designation,
+      assignedPhcId: phc.id,
+      assignedPhcName: phc.name,
+      role: account.role
+    }).catch((err) => {
+      console.warn('Cloud SQL user sync notice:', err.message);
+    });
+
+    return res.json({
+      ok: true,
+      session,
+      assignedPHC: phc
+    });
+  });
+
+  // Authenticate Demo Access Session (No Officer ID/Password required — Synthetic Demo Account for PHC Osian)
+  app.post('/api/auth/demo', (_req, res) => {
+    const sessionToken = `sess_demo_${crypto.randomBytes(16).toString('hex')}`;
+    const loginTimestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const { session, assignedPHC } = createDemoOfficerSession(FACILITIES, {
+      sessionToken,
+      loginTimestamp
+    });
+
+    activeOfficerSessions.set(sessionToken, {
+      session,
+      phcId: assignedPHC.id,
+      createdAt: new Date().toISOString()
+    });
+
+    logCloudEvent(
+      'INFO',
+      'auth.phc_demo_access',
+      'Demo Medical Officer session started for prototype evaluation',
+      {
+        officerId: session.officerId,
+        officerName: session.officerName,
+        assignedPhcId: assignedPHC.id,
+        assignedPhcName: assignedPHC.name,
+        loginMode: 'DEMO_ACCESS',
+        isDemoAccount: true
+      }
+    );
+
+    return res.json({
+      ok: true,
+      session,
+      assignedPHC
+    });
+  });
+
+  // Firebase Auth + Cloud SQL User Sync & Lookup routes
+  app.post('/api/users/sync', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const uid = req.user?.uid;
+      const email = req.user?.email || `${uid}@medresq.nhm.gov.in`;
+      if (!uid) {
+        return res.status(401).json({ error: 'Unauthorized: Missing user UID' });
+      }
+      const { officerId, officerName, designation, assignedPhcId, assignedPhcName, role } = req.body || {};
+      const syncedUser = await getOrCreateUser(uid, email, {
+        officerId,
+        officerName,
+        designation,
+        assignedPhcId,
+        assignedPhcName,
+        role
+      });
+      res.json({ ok: true, user: syncedUser });
+    } catch (error: any) {
+      console.error('Failed to sync user to Cloud SQL:', error);
+      res.status(500).json({ error: error.message || 'Failed to synchronize user profile' });
+    }
+  });
+
+  app.get('/api/users', requireAuth, async (_req: AuthRequest, res) => {
+    try {
+      const allUsers = await getUsers();
+      res.json(allUsers);
+    } catch (error: any) {
+      console.error('Failed to fetch users:', error);
+      res.status(500).json({ error: error.message || 'Failed to fetch users' });
+    }
+  });
+
+  app.get('/api/audit-logs', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const phcId = (req.query.phcId as string) || 'phc-osian';
+      const logs = await getAuditLogsByPhcFromCloudSql(phcId);
+      res.json(logs);
+    } catch (error: any) {
+      console.error('Failed to fetch Cloud SQL audit logs:', error);
+      res.status(500).json({ error: error.message || 'Failed to fetch audit logs' });
+    }
+  });
+
+  // Verify active PHC In-Charge session token
+  app.get('/api/auth/session', (req, res) => {
+    const authHeader = req.headers.authorization || '';
+    const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    const token = bearerToken || (typeof req.query.token === 'string' ? req.query.token.trim() : '');
+
+    if (!token || !activeOfficerSessions.has(token)) {
+      return res.status(401).json({
+        ok: false,
+        error: 'No active authenticated session found.'
+      });
+    }
+
+    const record = activeOfficerSessions.get(token)!;
+    const assignedPHC = FACILITIES.find((f) => f.id === record.phcId) || FACILITIES[0];
+    return res.json({
+      ok: true,
+      session: record.session,
+      assignedPHC
+    });
+  });
+
+  // Invalidate PHC In-Charge session on logout
+  app.post('/api/auth/logout', (req, res) => {
+    const authHeader = req.headers.authorization || '';
+    const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    const bodyToken = typeof req.body?.sessionToken === 'string' ? req.body.sessionToken.trim() : '';
+    const token = bearerToken || bodyToken;
+
+    if (token) {
+      activeOfficerSessions.delete(token);
+    }
+
+    return res.json({
+      ok: true,
+      message: 'PHC In-Charge session terminated.'
+    });
+  });
+
   // Authoritative bootstrap / full state synchronization endpoint
   app.get('/api/state', (req, res) => {
     const phcId = (req.query.phcId as string) || 'phc-osian';
@@ -197,6 +516,217 @@ async function startServer() {
 
   app.get('/api/supply-chain-audit', (_req, res) => {
     res.json(supplyChainAuditLog);
+  });
+
+  // In-memory store of facility-scoped staff directories and attendance records keyed by phcId
+  const facilityStaffStore = new Map<string, StaffMember[]>();
+  const facilityAttendanceStore = new Map<string, StaffAttendanceRecord[]>();
+
+  function ensureFacilityAttendanceState(phcId: string, todayStr?: string): {
+    phc: PHCFacility;
+    staff: StaffMember[];
+    records: StaffAttendanceRecord[];
+  } {
+    const phc = FACILITIES.find((f) => f.id === phcId) || FACILITIES[0];
+    const cleanDate = todayStr || new Date().toISOString().split('T')[0];
+
+    if (!facilityStaffStore.has(phc.id)) {
+      facilityStaffStore.set(phc.id, getFacilityStaffDirectory(phc));
+    }
+    if (!facilityAttendanceStore.has(phc.id)) {
+      facilityAttendanceStore.set(phc.id, getInitialAttendanceRecordsForPHC(phc, cleanDate));
+    }
+    return {
+      phc,
+      staff: facilityStaffStore.get(phc.id)!,
+      records: facilityAttendanceStore.get(phc.id)!
+    };
+  }
+
+  // Retrieve Staff Directory and Attendance Records for the authenticated or active PHC
+  app.get('/api/attendance', (req, res) => {
+    const authHeader = req.headers.authorization || '';
+    const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    const sessionRecord = bearerToken ? activeOfficerSessions.get(bearerToken) : undefined;
+
+    // Security: If authenticated session token is present, strictly enforce its assigned PHC ID
+    const resolvedPhcId = sessionRecord
+      ? sessionRecord.phcId
+      : (typeof req.query.phcId === 'string' && req.query.phcId.trim()) || 'phc-osian';
+
+    if (sessionRecord && req.query.phcId && req.query.phcId !== sessionRecord.phcId) {
+      return res.status(403).json({
+        ok: false,
+        error: 'Access denied: Medical Officer session is bound to its assigned PHC.'
+      });
+    }
+
+    const todayStr =
+      (typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date.trim())
+        ? req.query.date.trim()
+        : new Date().toISOString().split('T')[0]);
+
+    const { phc, staff, records } = ensureFacilityAttendanceState(resolvedPhcId, todayStr);
+    return res.json({
+      ok: true,
+      phcId: phc.id,
+      phcName: phc.name,
+      district: phc.district,
+      date: todayStr,
+      staff,
+      records
+    });
+  });
+
+  // Mark or save staff attendance (requires valid session or authorized officer, prevents cross-PHC tampering and duplicate records)
+  app.post('/api/attendance/mark', (req, res) => {
+    const authHeader = req.headers.authorization || '';
+    const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    const bodyToken = typeof req.body?.sessionToken === 'string' ? req.body.sessionToken.trim() : '';
+    const token = bearerToken || bodyToken;
+    const sessionRecord = token ? activeOfficerSessions.get(token) : undefined;
+
+    const requestedPhcId = typeof req.body?.phcId === 'string' ? req.body.phcId.trim() : '';
+
+    // Security: If an authenticated session is active, always use sessionRecord.phcId and reject cross-PHC writes
+    if (sessionRecord && requestedPhcId && requestedPhcId !== sessionRecord.phcId) {
+      logCloudEvent('WARNING', 'attendance.mark', 'Rejected cross-PHC attendance modification attempt', {
+        sessionPhcId: sessionRecord.phcId,
+        requestedPhcId,
+        officerId: sessionRecord.session.officerId
+      });
+      return res.status(403).json({
+        ok: false,
+        error: 'Forbidden: Cannot modify attendance records for another PHC.'
+      });
+    }
+
+    const resolvedPhcId = sessionRecord?.phcId || requestedPhcId || 'phc-osian';
+    const dateStr =
+      typeof req.body?.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.body.date.trim())
+        ? req.body.date.trim()
+        : new Date().toISOString().split('T')[0];
+
+    const { phc, staff, records } = ensureFacilityAttendanceState(resolvedPhcId, dateStr);
+
+    const markedByOfficer = sessionRecord
+      ? `${sessionRecord.session.officerName} (${sessionRecord.session.officerId})`
+      : typeof req.body?.markedBy === 'string' && req.body.markedBy.trim()
+      ? req.body.markedBy.trim()
+      : `${phc.medicalOfficerInCharge} (MOIC)`;
+
+    const rawEntries: Array<{ staffId: string; status: AttendanceStatus }> = Array.isArray(req.body?.entries)
+      ? req.body.entries
+      : req.body?.staffId && req.body?.status
+      ? [{ staffId: String(req.body.staffId), status: req.body.status as AttendanceStatus }]
+      : [];
+
+    if (rawEntries.length === 0) {
+      return res.status(400).json({
+        ok: false,
+        error: 'staffId and valid attendance status are required.'
+      });
+    }
+
+    const validStatuses: AttendanceStatus[] = ['PRESENT', 'ABSENT', 'ON_LEAVE', 'NOT_MARKED'];
+    const nowTime = new Date().toTimeString().slice(0, 5) + ' IST';
+    const nowIso = new Date().toISOString();
+    const updatedRecords: StaffAttendanceRecord[] = [];
+
+    for (const item of rawEntries) {
+      const cleanStatus = String(item.status || '').toUpperCase() as AttendanceStatus;
+      if (!validStatuses.includes(cleanStatus)) continue;
+
+      const staffMember = staff.find((s) => s.id === item.staffId || s.staffCode === item.staffId);
+      if (!staffMember || staffMember.phcId !== phc.id) {
+        continue;
+      }
+
+      const existingIdx = records.findIndex(
+        (r) => r.staffId === staffMember.id && r.phcId === phc.id && r.date === dateStr
+      );
+      const previousStatus: AttendanceStatus =
+        existingIdx >= 0
+          ? records[existingIdx].status
+          : (staffMember.status as AttendanceStatus) || 'NOT_MARKED';
+
+      const record: StaffAttendanceRecord = {
+        attendanceId:
+          existingIdx >= 0
+            ? records[existingIdx].attendanceId
+            : `ATT-${phc.id}-${dateStr}-${staffMember.id}`,
+        staffId: staffMember.id,
+        staffName: staffMember.name,
+        designation: staffMember.designation || staffMember.role,
+        department: staffMember.department || staffMember.assignedArea,
+        phcId: phc.id,
+        phcName: phc.name,
+        date: dateStr,
+        status: cleanStatus,
+        previousStatus,
+        markedBy: markedByOfficer,
+        markedByOfficerId: sessionRecord?.session.officerId,
+        markedAt: nowTime,
+        syncStatus: 'SYNCED'
+      };
+
+      if (existingIdx >= 0) {
+        records[existingIdx] = record;
+      } else {
+        records.unshift(record);
+      }
+
+      // Update current staff directory snapshot if marking today
+      staffMember.status = cleanStatus;
+      staffMember.attendanceStatus =
+        cleanStatus === 'PRESENT'
+          ? 'Present'
+          : cleanStatus === 'ABSENT'
+          ? 'Absent'
+          : cleanStatus === 'ON_LEAVE'
+          ? 'On Leave'
+          : 'Not Marked';
+      staffMember.lastAttendanceUpdate = nowTime;
+      staffMember.lastMarkedBy = markedByOfficer;
+
+      updatedRecords.push(record);
+
+      // Append to existing supplyChainAuditLog infrastructure
+      const auditEntry: SupplyChainAuditEntry = {
+        transactionId: `AUD-ATT-${Date.now()}-${Math.floor(100 + Math.random() * 899)}`,
+        entityId: record.attendanceId,
+        entityType: 'STAFF_ATTENDANCE',
+        medicineName: `${staffMember.name} (${staffMember.designation || staffMember.role})`,
+        quantity: 1,
+        unit: 'Staff',
+        source: phc.name,
+        destination: `Attendance (${dateStr})`,
+        timestamp: nowIso,
+        previousStatus,
+        newStatus: cleanStatus,
+        actor: markedByOfficer,
+        stockImpactSummary: `Staff ${staffMember.id} attendance updated: ${previousStatus} → ${cleanStatus} on ${dateStr}`,
+        notes: `PHC: ${phc.name} (${phc.id})`
+      };
+      supplyChainAuditLog.unshift(auditEntry);
+    }
+
+    logCloudEvent('INFO', 'attendance.mark', 'Staff attendance updated', {
+      phcId: phc.id,
+      date: dateStr,
+      updatedCount: updatedRecords.length,
+      markedBy: markedByOfficer
+    });
+
+    return res.json({
+      ok: true,
+      phcId: phc.id,
+      date: dateStr,
+      updatedRecords,
+      staff,
+      records,
+      supplyChainAuditLog
+    });
   });
 
   app.post('/api/demo/reset', (_req, res) => {
@@ -311,6 +841,11 @@ async function startServer() {
     const match = resolveMedicineMatch(facilityMeds, medicineName, medicineId);
 
     if (match.status === 'UNMATCHED') {
+      logCloudEvent('WARNING', 'inventory.verify_record', 'Offline/register record verification failed: unmatched medicine', {
+        phcId,
+        medicineName,
+        medicineId
+      });
       return res.status(404).json({
         error: match.reason,
         code: 'UNMATCHED_MEDICINE'
@@ -318,6 +853,11 @@ async function startServer() {
     }
 
     if (match.status === 'AMBIGUOUS') {
+      logCloudEvent('WARNING', 'inventory.verify_record', 'Offline/register record verification failed: ambiguous medicine', {
+        phcId,
+        medicineName,
+        candidateCount: match.candidates.length
+      });
       return res.status(400).json({
         error: match.reason,
         code: 'AMBIGUOUS_MEDICINE',
@@ -473,9 +1013,12 @@ async function startServer() {
 
       // Deterministic Clinical Supply Chain Prediction Engine
       const predictions = inputInventory.map((item: any) => {
-        const drugName = item.drug_name;
-        const currentStock = Number(item.current_stock) || 0;
-        const baseDailyBurn = Number(item.daily_burn_rate) || 1;
+        const drugName = item.drug_name || 'Unknown Drug';
+        const rawStock = Number(item.current_stock);
+        const currentStock = Number.isFinite(rawStock) ? Math.max(0, Math.round(rawStock)) : 0;
+        const rawBurn = Number(item.daily_burn_rate);
+        const hasValidBurn = Number.isFinite(rawBurn) && rawBurn > 0;
+        const baseDailyBurn = hasValidBurn ? rawBurn : 0;
         const unit = item.unit || 'Units';
 
         // RULE 1: Calculate stock depletion timeline (Days Remaining = Current Stock / Daily Burn Rate)
@@ -500,13 +1043,18 @@ async function startServer() {
           }
         }
 
-        const adjustedDailyBurn = baseDailyBurn * surgeMultiplier;
-        const daysLeft = Number((currentStock / (adjustedDailyBurn || 1)).toFixed(1));
+        const adjustedDailyBurn = hasValidBurn ? baseDailyBurn * surgeMultiplier : 0;
+        const daysLeft =
+          currentStock <= 0
+            ? 0
+            : hasValidBurn
+            ? Number((currentStock / adjustedDailyBurn).toFixed(1))
+            : 0;
 
         // RULE 2: RISK RATING: Assign a risk level: SAFE (>7 days left), WARNING (3–7 days left), CRITICAL (<3 days left)
         let riskLevel: 'SAFE' | 'WARNING' | 'CRITICAL' = 'SAFE';
-        if (daysLeft < 3.0) {
-          riskLevel = 'CRITICAL';
+        if (currentStock <= 0 || !hasValidBurn || daysLeft < 3.0) {
+          riskLevel = !hasValidBurn && currentStock > 0 ? 'WARNING' : 'CRITICAL';
         } else if (daysLeft <= 7.0) {
           riskLevel = 'WARNING';
         } else {
@@ -621,302 +1169,172 @@ async function startServer() {
 
   // Process Voice Entry (Multilingual Indic Speech-to-Text + Vertex AI / Gemini NLU)
   app.post('/api/voice/process', async (req, res) => {
-    const { transcript, language, sttEngine, phcId = 'phc-osian' } = req.body;
+    const { transcript, language, locale, sttEngine, phcId = 'phc-osian' } = req.body;
     if (!transcript) {
       return res.status(400).json({ error: 'Transcript required' });
     }
 
     const facilityMeds = ensureFacilityMedicines(phcId);
     const medNamesList = facilityMeds.map((m) => m.name).join(', ');
+    const langConfig = resolveVoiceLanguageConfig(locale || language);
 
     const langLabels: Record<string, string> = {
-      hinglish: 'Hinglish (Colloquial Indic)',
-      hindi: 'Hindi (हिन्दी)',
-      marwari: 'Rajasthani / Marwari (मारवाड़ी)',
-      tamil: 'Tamil (தமிழ்)',
-      telugu: 'Telugu (తెలుగు)',
-      bengali: 'Bengali (বাংলা)',
-      marathi: 'Marathi (मराठी)',
-      gujarati: 'Gujarati (ગુજરાતી)',
-      english: 'English (Indian Clinical)'
+      en: 'English (India — en-IN)',
+      'en-IN': 'English (India — en-IN)',
+      english: 'English (India — en-IN)',
+      hi: 'Hindi (हिन्दी — hi-IN)',
+      'hi-IN': 'Hindi (हिन्दी — hi-IN)',
+      hindi: 'Hindi (हिन्दी — hi-IN)',
+      hinglish: 'Hindi / Hinglish (hi-IN)',
+      ta: 'Tamil (தமிழ் — ta-IN)',
+      'ta-IN': 'Tamil (தமிழ் — ta-IN)',
+      tamil: 'Tamil (தமிழ் — ta-IN)',
+      te: 'Telugu (తెలుగు — te-IN)',
+      'te-IN': 'Telugu (తెలుగు — te-IN)',
+      telugu: 'Telugu (తెలుగు — te-IN)'
     };
+
+    const resolvedLangLabel =
+      langLabels[String(locale || '')] ||
+      langLabels[String(language || '')] ||
+      `${langConfig.label} (${langConfig.locale})`;
+
+    // Run deterministic multilingual command parser first so native Hindi/Tamil/Telugu/English commands are always structured accurately
+    const deterministicCommand = parsePhysicalRegisterVoiceCommand(
+      transcript,
+      locale || language || langConfig.code,
+      facilityMeds
+    );
 
     const ai = getGemini();
     if (ai) {
       const parsed = await generateGeminiJson(
         ai,
-        `You are a Vertex AI & Gemini Clinical NLU engine for a Primary Health Centre (PHC) inventory and register digitization system in India.
-The user spoke or submitted a command in ${langLabels[language] || language || 'an Indian language'} regarding medicine inventory, dispensing, receiving, checking stock, replenishment orders, reporting shortages, registering physical stock register entries, or adding daily PHC operational data (OPD footfall, occupied beds, emergency cases, and medicine stock).
+        `You are a Vertex AI & Gemini Clinical NLU engine for a Primary Health Centre (PHC) Physical Register and inventory digitization system in India.
+The user spoke a voice command in ${resolvedLangLabel} (BCP-47 locale: ${langConfig.locale}).
 Spoken text: "${transcript}"
 
 Available PHC NLEM Formulary Medicines: ${medNamesList}
 
+Supported Physical Register Command Intents:
+- "ADD" / "Receipt": e.g. "add 20 paracetamol", "पैरासिटामोल 20 जोड़ो", "பாராசிட்டமால் 20 சேர்", "పారాసిటమాల్ 20 జోడించు"
+- "DISPENSE" / "Consumption": e.g. "dispense 10 ORS", "ओआरएस 10 कम करो", "ORS 10 குறை", "ORS 10 తగ్గించు"
+- "UPDATE": e.g. "update amoxicillin 50", "अमोक्सिसिलिन 50 अपडेट करो", "அமாக்சிசிலின் 50 புதுப்பி", "అమాక్సిసిలిన్ 50 అప్డేట్ చేయి"
+- "SEARCH": e.g. "search paracetamol", "पैरासिटामोल खोजो", "பாராசிட்டமால் தேடு", "పారాసిటమాల్ వెతుకు"
+- "VERIFY": e.g. "verify entry", "एंट्री वेरीफाई करो", "பதிவை சரிபார்", "ఎంట్రీ ధృవీకరించు"
+- "SAVE": e.g. "save register", "रजिस्टर सेव करो", "பதிவேட்டை சேமி", "రిజిస్టర్ సేవ్ చేయి"
+- "ADD_PHC_DATA": e.g. updating OPD footfall, occupied beds, emergency cases
+
 Extract and translate into the following structured JSON:
 {
-  "languageDetected": "Detected language name (e.g. Hindi (हिन्दी), Hinglish, Tamil (தமிழ்), Marwari, Telugu, Bengali, Marathi, English)",
+  "languageDetected": "${resolvedLangLabel}",
+  "parsedAction": "ADD" | "DISPENSE" | "UPDATE" | "SEARCH" | "VERIFY" | "SAVE" | "ADD_PHC_DATA" | "UNKNOWN",
   "englishTranslation": "Clean English clinical translation of the spoken command",
   "hindiTranslation": "Clean Hindi (Devanagari) translation of the spoken command",
-  "nativeScriptSummary": "Brief confirmation in the speaker's language",
-  "wardDepartment": "OPD Dispensary, Emergency Triage Ward, Pediatric Ward, Maternal Labor Room, Physical Register Desk, or Main Drug Store",
-  "parsedMedicine": "Exact closest medicine name from the Available PHC NLEM Formulary Medicines list above",
-  "parsedTransaction": "Consumption" or "Receipt" or "Emergency Dispense" or "Check Stock" or "Replenishment Order" or "Report Shortage" or "Register Entry" or "Add PHC Data",
-  "parsedQuantity": number,
+  "nativeScriptSummary": "Brief confirmation in ${langConfig.nativeLabel} (${langConfig.locale})",
+  "wardDepartment": "OPD Dispensary, Emergency Triage Ward, Physical Register Desk, or Main Drug Store",
+  "parsedMedicine": "Exact closest medicine name from the Available PHC NLEM Formulary Medicines list above (or empty string if VERIFY/SAVE)",
+  "parsedTransaction": "Consumption" or "Receipt" or "Emergency Dispense" or "Check Stock" or "Replenishment Order" or "Report Shortage" or "Register Entry" or "Add PHC Data" or "Update Stock" or "Search Register" or "Verify Entry" or "Save Register",
+  "parsedQuantity": number or null,
   "parsedBatch": "Batch code if mentioned (e.g. ORS-2604, PCM-440), otherwise empty string",
-  "parsedOpdFootfall": number or null (if user mentioned OPD patients / footfall count),
-  "parsedOccupiedBeds": number or null (if user mentioned occupied beds / inpatient admissions),
-  "parsedEmergencyCases": number or null (if user mentioned emergency cases),
+  "parsedOpdFootfall": number or null,
+  "parsedOccupiedBeds": number or null,
+  "parsedEmergencyCases": number or null,
   "parsedDate": "2026-09-28",
   "confidence": 0.97,
   "notes": "Brief clinical context explanation"
 }`
       );
 
-      if (parsed && parsed.parsedMedicine) {
-        const matched = resolveMedicineMatch(facilityMeds, parsed.parsedMedicine);
-        const canonicalMed = matched.status === 'MATCHED' ? matched.medicine.name : parsed.parsedMedicine;
+      if (parsed) {
+        const mergedCommand = parsePhysicalRegisterVoiceCommand(
+          transcript,
+          locale || language || langConfig.code,
+          facilityMeds,
+          {
+            parsedAction: parsed.parsedAction,
+            parsedMedicine: parsed.parsedMedicine,
+            parsedQuantity:
+              typeof parsed.parsedQuantity === 'number' ? parsed.parsedQuantity : undefined,
+            parsedBatch: parsed.parsedBatch,
+            parsedTransaction: parsed.parsedTransaction,
+            parsedOpdFootfall: parsed.parsedOpdFootfall,
+            parsedOccupiedBeds: parsed.parsedOccupiedBeds,
+            parsedEmergencyCases: parsed.parsedEmergencyCases,
+            confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.96
+          }
+        );
+
+        const canonicalMed =
+          mergedCommand.medicineName ||
+          parsed.parsedMedicine ||
+          'Oral Rehydration Salts (ORS) Sachets 20.5g';
+
         return res.json({
           rawTranscript: transcript,
-          languageDetected: parsed.languageDetected || langLabels[language] || 'Hinglish / Hindi',
+          languageDetected: parsed.languageDetected || resolvedLangLabel,
+          locale: langConfig.locale,
+          languageCode: langConfig.code,
           englishTranslation:
-            parsed.englishTranslation ||
-            `${parsed.parsedTransaction}: ${parsed.parsedQuantity} units of ${canonicalMed}`,
+            parsed.englishTranslation || mergedCommand.englishSummary,
           hindiTranslation:
             parsed.hindiTranslation ||
-            `${canonicalMed} की ${parsed.parsedQuantity} इकाइयां (${parsed.parsedTransaction}) दर्ज की गईं।`,
+            `${canonicalMed} की ${mergedCommand.quantity ?? 0} इकाइयां (${mergedCommand.action}) दर्ज की गईं।`,
           nativeScriptSummary:
-            parsed.nativeScriptSummary ||
-            `Verified ${parsed.parsedQuantity} units of ${canonicalMed}`,
-          wardDepartment: parsed.wardDepartment || 'OPD Dispensary',
-          engineUsed: 'Google Cloud Vertex AI & Gemini 3.8 Flash NLU',
-          sttEngine: sttEngine || 'gemini-3.5-transcribe',
+            parsed.nativeScriptSummary || mergedCommand.nativeConfirmation,
+          wardDepartment: parsed.wardDepartment || 'Physical Register Digitization Desk',
+          engineUsed: 'Google Cloud Vertex AI & Gemini Multilingual NLU',
+          sttEngine: sttEngine || 'gemini-2.5-flash-audio',
           ...parsed,
-          parsedMedicine: canonicalMed
+          parsedMedicine: canonicalMed,
+          parsedQuantity: mergedCommand.quantity ?? parsed.parsedQuantity ?? 10,
+          normalizedCommand: mergedCommand
         });
       }
     }
 
-    // Multilingual NLU & rule-based clinical parsing engine
-    const text = transcript.toLowerCase();
-    let parsedMedicine = 'Oral Rehydration Salts (ORS) Sachets 20.5g';
-    let parsedTransaction:
-      | 'Consumption'
-      | 'Receipt'
-      | 'Emergency Dispense'
-      | 'Check Stock'
-      | 'Replenishment Order'
-      | 'Report Shortage'
-      | 'Register Entry'
-      | 'Add PHC Data' = 'Consumption';
-    let parsedQuantity = 35;
-    let parsedBatch = '';
-    let parsedOpdFootfall: number | undefined = undefined;
-    let parsedOccupiedBeds: number | undefined = undefined;
-    let parsedEmergencyCases: number | undefined = undefined;
-    let wardDepartment = 'OPD Dispensary';
-    let notes = 'OPD routine dispensing';
+    // Deterministic multilingual fallback using registerVoiceCommandParser
+    const txMap: Record<string, string> = {
+      ADD: 'Receipt',
+      DISPENSE: 'Consumption',
+      UPDATE: 'Register Entry',
+      SEARCH: 'Check Stock',
+      VERIFY: 'Register Entry',
+      SAVE: 'Register Entry',
+      ADD_PHC_DATA: 'Add PHC Data',
+      UNKNOWN: 'Register Entry'
+    };
 
-    // Match against any medicine in facilityMeds first
-    for (const med of facilityMeds) {
-      const mLower = med.name.toLowerCase();
-      const firstWord = mLower.split(/[\s(]+/)[0];
-      if (firstWord && firstWord.length >= 4 && text.includes(firstWord)) {
-        parsedMedicine = med.name;
-        break;
-      }
-    }
+    const mappedTransaction =
+      txMap[deterministicCommand.action] || 'Consumption';
+    const finalMed =
+      deterministicCommand.medicineName ||
+      'Oral Rehydration Salts (ORS) Sachets 20.5g';
+    const finalQty = deterministicCommand.quantity ?? 20;
 
-    if (
-      text.includes('pcm') ||
-      text.includes('paracetamol') ||
-      text.includes('पैरासिटामोल') ||
-      text.includes('பாராசிட்டமால்') ||
-      text.includes('पॅरासिटामॉल') ||
-      text.includes('প্যারাসিটামল') ||
-      text.includes('పారాసిటమాల్')
-    ) {
-      parsedMedicine = 'Paracetamol Tablets IP 500mg';
-    } else if (
-      text.includes('saline') ||
-      /\bns\b/.test(text) ||
-      text.includes('सलाइन') ||
-      text.includes('சலைன்') ||
-      text.includes('సెలైన్')
-    ) {
-      parsedMedicine = 'Normal Saline (0.9% NaCl) IV Infusion 500ml';
-    } else if (/\brl\b/.test(text) || text.includes('ringer') || text.includes('रिंगर')) {
-      parsedMedicine = 'Ringer Lactate (RL) IV Infusion 500ml';
-    } else if (text.includes('amox') || text.includes('antibiotic') || text.includes('एमोक्सिसिलिन')) {
-      parsedMedicine = 'Amoxicillin Capsules IP 500mg';
-    } else if (text.includes('zinc') || text.includes('जिंक') || text.includes('ஜிங்க்') || text.includes('జింక్')) {
-      parsedMedicine = 'Zinc Sulfate Dispersible Tablets 20mg';
-    } else if (/\barv\b/.test(text) || text.includes('rabies') || text.includes('रेबीज')) {
-      parsedMedicine = 'Anti-Rabies Vaccine (ARV) 2.5 IU/ml';
-    } else if (text.includes('snake') || text.includes('venom') || /\basv\b/.test(text) || text.includes('एंटी-स्नेक')) {
-      parsedMedicine = 'Polyvalent Anti-Snake Venom (ASV)';
-    } else if (text.includes('ors') || text.includes('rehydration') || text.includes('ओआरएस')) {
-      parsedMedicine = 'Oral Rehydration Salts (ORS) Sachets 20.5g';
-    }
-
-    // Batch extraction (e.g., "batch ORS-204" or "batch B-99")
-    const batchMatch = transcript.match(/batch\s+([A-Za-z0-9\-_]+)/i);
-    if (batchMatch) {
-      parsedBatch = batchMatch[1].toUpperCase();
-    }
-
-    // Extract OPD footfall & bed occupancy if spoken
-    const opdMatch = text.match(/(\d+)\s*(?:opd|patients|footfall|मरीज|ओपीडी)/i);
-    if (opdMatch) {
-      parsedOpdFootfall = parseInt(opdMatch[1], 10);
-    }
-    const bedMatch = text.match(/(\d+)\s*(?:beds?|occupied|admitted|बेड|भर्ती)/i);
-    if (bedMatch) {
-      parsedOccupiedBeds = parseInt(bedMatch[1], 10);
-    }
-    const emergMatch = text.match(/(\d+)\s*(?:emergency cases|casualties|आपातकालीन केस)/i);
-    if (emergMatch) {
-      parsedEmergencyCases = parseInt(emergMatch[1], 10);
-    }
-
-    // Numbers in Digits or Indic words
-    const numberMatch = text.match(/\d+/);
-    if (numberMatch) {
-      parsedQuantity = parseInt(numberMatch[0], 10);
-    } else if (text.includes('pachees') || text.includes('पच्चीस')) {
-      parsedQuantity = 25;
-    } else if (text.includes('paints') || text.includes('pentees') || text.includes('पैंतीस')) {
-      parsedQuantity = 35;
-    } else if (text.includes('chalis') || text.includes('चालीस')) {
-      parsedQuantity = 40;
-    } else if (text.includes('pachas') || text.includes('पचास')) {
-      parsedQuantity = 50;
-    } else if (text.includes('sau') || text.includes('hundred') || text.includes('सौ')) {
-      parsedQuantity = 100;
-    }
-
-    if (
-      text.includes('phc data') ||
-      text.includes('add data') ||
-      text.includes('phc report') ||
-      text.includes('daily report') ||
-      text.includes('opd footfall') ||
-      text.includes('occupied beds') ||
-      text.includes('पीएचसी डेटा') ||
-      (parsedOpdFootfall !== undefined && parsedOccupiedBeds !== undefined)
-    ) {
-      parsedTransaction = 'Add PHC Data';
-      wardDepartment = 'PHC Daily Telemetry & Store';
-      notes = `PHC Data Registration${parsedOpdFootfall ? ` · OPD: ${parsedOpdFootfall}` : ''}${parsedOccupiedBeds ? ` · Beds: ${parsedOccupiedBeds}` : ''}`;
-    } else if (
-      text.includes('register') ||
-      text.includes('add to register') ||
-      text.includes('ledger entry') ||
-      text.includes('रजिस्टर') ||
-      text.includes('दर्ज करें')
-    ) {
-      parsedTransaction = 'Register Entry';
-      wardDepartment = 'Physical Register Digitization Desk';
-      notes = `Direct voice-to-register row entry${parsedBatch ? ` (Batch ${parsedBatch})` : ''}`;
-    } else if (
-      text.includes('check stock') ||
-      text.includes('stock check') ||
-      text.includes('kitna stock') ||
-      text.includes('स्टॉक चेक') ||
-      text.includes('कितना स्टॉक') ||
-      text.includes('how much stock') ||
-      text.includes('inventory status')
-    ) {
-      parsedTransaction = 'Check Stock';
-      wardDepartment = 'Main PHC Drug Store';
-      notes = 'Live FEFO stock & days-of-cover audit query';
-      if (!numberMatch) parsedQuantity = 1;
-    } else if (
-      text.includes('replenishment') ||
-      text.includes('add order') ||
-      text.includes('create order') ||
-      text.includes('order') ||
-      text.includes('indent') ||
-      text.includes('requisition') ||
-      text.includes('ऑर्डर') ||
-      text.includes('मंगवाएं') ||
-      text.includes('इंडेंट')
-    ) {
-      parsedTransaction = 'Replenishment Order';
-      wardDepartment = 'RMSCL Supply Chain Desk';
-      notes = 'Automated RMSCL district warehouse replenishment indent';
-      if (!numberMatch) parsedQuantity = 200;
-    } else if (
-      text.includes('shortage') ||
-      text.includes('stockout') ||
-      text.includes('low stock') ||
-      text.includes('khatam') ||
-      text.includes('kami') ||
-      text.includes('कमी') ||
-      text.includes('खत्म') ||
-      text.includes('शॉर्टेज')
-    ) {
-      parsedTransaction = 'Report Shortage';
-      wardDepartment = 'Emergency Triage & Store';
-      notes = 'Critical drug shortage alert flagged for immediate escalation';
-      if (!numberMatch) parsedQuantity = 50;
-    } else if (
-      text.includes('received') ||
-      text.includes('aaye') ||
-      text.includes('aaya') ||
-      text.includes('receipt') ||
-      text.includes('mili') ||
-      text.includes('प्राप्त') ||
-      text.includes('मिली') ||
-      text.includes('வந்தது') ||
-      text.includes('వచ్చాయి')
-    ) {
-      parsedTransaction = 'Receipt';
-      wardDepartment = 'Main PHC Drug Store';
-      notes = 'Inward shipment received from district warehouse';
-    } else if (
-      text.includes('emergency') ||
-      text.includes('casualty') ||
-      text.includes('आपातकालीन') ||
-      text.includes('इमरजेंसी') ||
-      text.includes('அவசர')
-    ) {
-      parsedTransaction = 'Emergency Dispense';
-      wardDepartment = 'Emergency Triage Ward';
-      notes = 'Emergency casualty triage administration';
-    } else if (text.includes('pediatric') || text.includes('बच्चों') || text.includes('शिशु')) {
-      wardDepartment = 'Pediatric Ward';
-    }
-
-    const detectedLabel =
-      langLabels[language] ||
-      (/[\u0900-\u097F]/.test(transcript)
-        ? 'Hindi / Devanagari (हिन्दी)'
-        : /[\u0B80-\u0BFF]/.test(transcript)
-        ? 'Tamil (தமிழ்)'
-        : /[\u0C00-\u0C7F]/.test(transcript)
-        ? 'Telugu (తెలుగు)'
-        : /[\u0980-\u09FF]/.test(transcript)
-        ? 'Bengali (বাংলা)'
-        : 'Hinglish / English');
-
-    res.json({
+    return res.json({
       rawTranscript: transcript,
-      languageDetected: detectedLabel,
-      englishTranslation: `${parsedTransaction} of ${parsedQuantity} units of ${parsedMedicine} at ${wardDepartment}.`,
-      hindiTranslation: `${wardDepartment} में ${parsedMedicine} की ${parsedQuantity} इकाइयां (${parsedTransaction}) दर्ज की गईं।`,
-      nativeScriptSummary: `${parsedMedicine} • ${parsedQuantity} units (${parsedTransaction})`,
-      wardDepartment,
-      engineUsed: 'Google Cloud Vertex AI & Gemini 3.8 Flash NLU',
-      sttEngine: sttEngine || 'gemini-3.5-transcribe',
-      parsedMedicine,
-      parsedTransaction,
-      parsedQuantity,
-      parsedBatch: parsedBatch || undefined,
-      parsedOpdFootfall,
-      parsedOccupiedBeds,
-      parsedEmergencyCases,
+      languageDetected: resolvedLangLabel,
+      locale: langConfig.locale,
+      languageCode: langConfig.code,
+      englishTranslation: deterministicCommand.englishSummary,
+      hindiTranslation: `${finalMed} की ${finalQty} इकाइयां (${deterministicCommand.action}) दर्ज की गईं।`,
+      nativeScriptSummary: deterministicCommand.nativeConfirmation,
+      wardDepartment: 'Physical Register Digitization Desk',
+      engineUsed: `Multilingual Clinical Command Parser (${langConfig.locale})`,
+      sttEngine: sttEngine || 'hybrid-speech-ai',
+      parsedAction: deterministicCommand.action,
+      parsedMedicine: finalMed,
+      parsedTransaction: mappedTransaction,
+      parsedQuantity: finalQty,
+      parsedBatch: deterministicCommand.batch || undefined,
+      parsedOpdFootfall: deterministicCommand.opdFootfall ?? undefined,
+      parsedOccupiedBeds: deterministicCommand.occupiedBeds ?? undefined,
+      parsedEmergencyCases: deterministicCommand.emergencyCases ?? undefined,
       parsedDate: '2026-09-28',
-      confidence: 0.96,
-      notes
+      confidence: deterministicCommand.confidence,
+      notes: deterministicCommand.englishSummary,
+      normalizedCommand: deterministicCommand
     });
   });
 
@@ -1014,7 +1432,7 @@ Extract and translate into the following structured JSON:
 
       const ai = getGemini();
       if (ai && (cleanBase64 || customText)) {
-        const modelsToTry = ['gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
+        const modelsToTry = ['gemini-3.1-flash-lite-preview', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
         for (const modelName of modelsToTry) {
           if (!isGeminiModelAvailable(modelName)) continue;
           try {
@@ -1189,14 +1607,17 @@ Return ONLY valid JSON in this exact format:
       let extractedRawText = (customText || clientOcrText || '').trim();
       let ocrConfidenceScore = Number(clientOcrConfidence) || 0;
 
-      if (!extractedRawText && cleanBase64) {
+      if (! extractedRawText && cleanBase64) {
         try {
           const imgBuffer = Buffer.from(cleanBase64, 'base64');
           const tesseractResult = await Tesseract.recognize(imgBuffer, 'eng');
           extractedRawText = (tesseractResult?.data?.text || '').trim();
           ocrConfidenceScore = Number(tesseractResult?.data?.confidence || 0) / 100;
-        } catch {
-          // Graceful fallback if image buffer cannot be decoded by Tesseract
+        } catch (tessErr) {
+          logCloudEvent('WARNING', 'ocr.process', 'Tesseract optical character recognition failed on image buffer', {
+            phcId,
+            reason: String((tessErr as any)?.message || tessErr || '').slice(0, 160)
+          });
         }
       }
 
@@ -1416,50 +1837,114 @@ Return ONLY valid JSON in this exact format:
     });
   });
 
-  // Audio Transcription with gemini-3.5-transcribe
+  // Language-Aware Audio Transcription with Gemini Multimodal Audio Models (en-IN, hi-IN, ta-IN, te-IN)
   app.post('/api/voice/transcribe', async (req, res) => {
-    const { audioBase64, mimeType = 'audio/webm' } = req.body;
-    if (!audioBase64) {
-      return res.status(400).json({ error: 'audioBase64 is required' });
+    const {
+      audioBase64,
+      mimeType = 'audio/webm',
+      language = 'en-IN',
+      locale,
+      browserTranscript = ''
+    } = req.body;
+    if (!audioBase64 && !browserTranscript) {
+      return res.status(400).json({ error: 'audioBase64 or browserTranscript is required' });
     }
 
-    const ai = getGemini();
-    if (ai) {
-      try {
-        const response = await ai.models.generateContent({
-          model: 'gemini-3.5-transcribe',
-          contents: {
-            parts: [
-              {
-                inlineData: {
-                  mimeType,
-                  data: audioBase64
-                }
-              },
-              {
-                text: 'Transcribe this audio recording verbatim in its spoken language (English, Hindi, or Hinglish) for medical/inventory operations. Return only the clean transcribed text.'
-              }
-            ]
-          }
-        });
+    const langConfig = resolveVoiceLanguageConfig(language || locale);
+    const languagePrompts: Record<string, string> = {
+      en: 'English (India, en-IN). Examples: "add 20 paracetamol", "dispense 10 ORS", "update amoxicillin 50", "search paracetamol", "verify entry", "save register".',
+      hi: 'Hindi (हिन्दी, hi-IN) in Devanagari script (or spoken Hindi/Hinglish). Examples: "पैरासिटामोल 20 जोड़ो", "ओआरएस 10 कम करो", "अमोक्सिसिलिन 50 अपडेट करो", "पैरासिटामोल खोजो", "रजिस्टर सेव करो".',
+      ta: 'Tamil (தமிழ், ta-IN) in Tamil script (or spoken Tamil). Examples: "பாராசிட்டமால் 20 சேர்", "ORS 10 குறை", "அமாக்சிசிலின் 50 புதுப்பி", "பாராசிட்டமால் தேடு", "பதிவேட்டை சேமி".',
+      te: 'Telugu (తెలుగు, te-IN) in Telugu script (or spoken Telugu). Examples: "పారాసిటమాల్ 20 జోడించు", "ORS 10 తగ్గించు", "అమాక్సిసిలిన్ 50 అప్డేట్ చేయి", "పారాసిటమాల్ వెతుకు", "రిజిస్టర్ సేవ్ చేయి".'
+    };
 
-        const transcript = response.text?.trim() || '';
-        if (transcript) {
-          return res.json({ success: true, transcript, modelUsed: 'gemini-3.5-transcribe' });
+    const ai = getGemini();
+    if (ai && audioBase64) {
+      const audioModels = [
+        'gemini-3-flash-preview',
+        'gemini-3.1-flash-lite-preview',
+        'gemini-2.5-flash'
+      ];
+
+      for (const modelName of audioModels) {
+        if (!isGeminiModelAvailable(modelName)) continue;
+        try {
+          const response = await ai.models.generateContent({
+            model: modelName,
+            contents: {
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: mimeType.split(';')[0] || 'audio/webm',
+                    data: audioBase64
+                  }
+                },
+                {
+                  text: `You are an expert Indian clinical speech-to-text transcription engine.
+The speaker's selected language is ${langConfig.label} (BCP-47 locale: ${langConfig.locale}).
+Language context & vocabulary: ${languagePrompts[langConfig.code] || languagePrompts.en}
+${browserTranscript ? `Browser speech hint (may be partial): "${browserTranscript}"` : ''}
+
+Instructions:
+1. Transcribe the spoken medical/register command verbatim in ${langConfig.label} (${langConfig.scriptName} script, keeping standard numbers like 10, 20, 50 and drug acronyms like ORS, ASV if spoken).
+2. If the audio is silent or unintelligible, return empty string "".
+3. Return ONLY the clean transcribed text without quotes or commentary.`
+                }
+              ]
+            },
+            config: {
+              temperature: 0.1
+            }
+          });
+
+          const transcript = response.text?.trim() || '';
+          if (transcript) {
+            return res.json({
+              success: true,
+              transcript,
+              language: langConfig.code,
+              locale: langConfig.locale,
+              isSimulatedFallback: false,
+              modelUsed: `${modelName} (${langConfig.locale} Audio ASR)`
+            });
+          }
+        } catch (error) {
+          recordGeminiModelError(modelName, error);
         }
-      } catch (error) {
-        recordGeminiModelError('gemini-3.5-transcribe', error);
       }
     }
 
+    // If browser SpeechRecognition captured a transcript, return it normalized
+    if (typeof browserTranscript === 'string' && browserTranscript.trim().length > 0) {
+      return res.json({
+        success: true,
+        transcript: browserTranscript.trim(),
+        language: langConfig.code,
+        locale: langConfig.locale,
+        isSimulatedFallback: false,
+        modelUsed: `Browser SpeechRecognition (${langConfig.locale})`
+      });
+    }
+
+    // Language-aware acoustic fallback when Gemini API key/quota is unavailable and browser speech returned empty
+    const fallbackByLang: Record<string, string> = {
+      en: 'add 20 paracetamol',
+      hi: 'पैरासिटामोल 20 जोड़ो',
+      ta: 'பாராசிட்டமால் 20 சேர்',
+      te: 'పారాసిటమాల్ 20 జోడించు'
+    };
+
     return res.json({
       success: true,
-      transcript: 'Dispensed 35 packets of ORS and 120 tablets of Paracetamol 500mg at OPD counter.',
-      modelUsed: 'gemini-3.5-transcribe (Offline Acoustic Fallback)'
+      transcript: fallbackByLang[langConfig.code] || fallbackByLang.en,
+      language: langConfig.code,
+      locale: langConfig.locale,
+      isSimulatedFallback: true,
+      modelUsed: `Gemini Audio Fallback (${langConfig.locale})`
     });
   });
 
-  // Maps Grounding using gemini-3.8-flash with googleMaps tool
+  // Maps Grounding using gemini-2.5-flash with googleMaps tool
   app.post('/api/maps/grounding', async (req, res) => {
     const { query, latitude = 26.7271, longitude = 72.9946 } = req.body;
     if (!query) {
@@ -1467,10 +1952,10 @@ Return ONLY valid JSON in this exact format:
     }
 
     const ai = getGemini();
-    if (ai) {
+    if (ai && isGeminiModelAvailable('gemini-2.5-flash')) {
       try {
         const response = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model: 'gemini-2.5-flash',
           contents: query,
           config: {
             tools: [{ googleMaps: {} }],
@@ -1504,10 +1989,10 @@ Return ONLY valid JSON in this exact format:
           success: true,
           text,
           places,
-          modelUsed: 'gemini-3.8-flash'
+          modelUsed: 'gemini-2.5-flash'
         });
       } catch (error) {
-        recordGeminiModelError('gemini-3.8-flash', error);
+        recordGeminiModelError('gemini-2.5-flash', error);
       }
     }
 
@@ -1566,10 +2051,10 @@ Style: Professional clean CAD architectural schematic, high-contrast 2D floor pl
     };
 
     const ai = getGemini();
-    if (ai) {
+    if (ai && isGeminiModelAvailable('gemini-3.1-flash-image-preview')) {
       try {
         const response = await ai.models.generateContent({
-          model: 'gemini-3.1-flash-image',
+          model: 'gemini-3.1-flash-image-preview',
           contents: {
             parts: [{ text: promptText }]
           },
@@ -1587,7 +2072,7 @@ Style: Professional clean CAD architectural schematic, high-contrast 2D floor pl
             return res.json({
               success: true,
               imageUrl,
-              modelUsed: 'gemini-3.1-flash-image (Imagen Architecture)',
+              modelUsed: 'gemini-3.1-flash-image-preview (Imagen Architecture)',
               promptUsed: promptText,
               optimizationGoal,
               analysis: {
@@ -1605,7 +2090,7 @@ Style: Professional clean CAD architectural schematic, high-contrast 2D floor pl
           }
         }
       } catch (err) {
-        recordGeminiModelError('gemini-3.1-flash-image', err);
+        recordGeminiModelError('gemini-3.1-flash-image-preview', err);
       }
     }
 
@@ -1629,88 +2114,131 @@ Style: Professional clean CAD architectural schematic, high-contrast 2D floor pl
     });
   });
 
-  // Multi-turn Chat using Gemini with role-based system instructions
+  // Multi-turn Chat using Gemini with role-based system instructions & supply-chain safety guardrails
   app.post('/api/chat', async (req, res) => {
-    const { messages = [], persona = 'clinical_officer', taskComplexity = 'general' } = req.body;
+    const {
+      messages = [],
+      persona = 'clinical_officer',
+      taskComplexity = 'general',
+      phcId = 'phc-osian',
+      phcName = 'PHC Osian (24x7)'
+    } = req.body || {};
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: 'Messages array is required' });
     }
 
+    const activePhcId = String(phcId || 'phc-osian');
+    const activeMeds = ensureFacilityMedicines(activePhcId);
+    const inventoryContext = activeMeds
+      .slice(0, 14)
+      .map((m) => {
+        const stock = Math.max(0, Number(m.currentStock) || 0);
+        const burn = Math.max(0, Number(m.dailyConsumption) || 0);
+        const rop = Math.max(0, Number(m.minStockLevel || m.minThreshold) || 0);
+        const days = burn > 0 ? `${(stock / burn).toFixed(1)}d` : 'Insufficient burn history';
+        return `- ${m.name} (${m.id}): UsableStock=${stock} ${m.unit}, DailyBurn=${burn}/${m.unit}, SafetyThreshold/ROP=${rop} ${m.unit}, Cover=${days}, Risk=${m.stockoutRisk}, Batch=${m.batchNumber}, Expiry=${m.expiryDate}`;
+      })
+      .join('\n');
+
+    const guardrailContext = `\n\nSTRICT SUPPLY-CHAIN & NON-HALLUCINATION GUARDRAILS:
+1. Ground all medicine counts, batch numbers, safety thresholds, and shortage evaluations strictly in the user's input or the LIVE FACILITY INVENTORY SNAPSHOT below for ${phcName} (${activePhcId}).
+2. Clearly distinguish ACTUAL recorded inventory figures from ESTIMATED demand forecasts or seasonal surge projections.
+3. NEVER invent or hallucinate medicine availability, batch numbers, government statistics, or external API results.
+4. If required data is missing, zero, negative, or unavailable, explicitly state: "Insufficient data / unable to determine" and specify what data is needed.
+5. Do NOT provide patient-specific clinical prescribing, autonomous diagnosis, or autonomous medical treatment decisions. Keep guidance focused on PHC medicine supply-chain resilience, FEFO batch rotation, safety stock/ROP, and inter-PHC redistribution/indent workflows.
+
+LIVE FACILITY INVENTORY SNAPSHOT (${phcName} — Simulated Prototype Dataset):
+${inventoryContext || 'No active inventory records loaded.'}`;
+
     const ai = getGemini();
 
-    let model = isGeminiModelAvailable('gemini-3.8-flash') ? 'gemini-3.8-flash' : 'gemini-3.1-flash-lite';
-    if (taskComplexity === 'fast' || persona === 'rapid_dispatch') {
-      model = 'gemini-3.1-flash-lite';
+    let model = 'gemini-3-flash-preview';
+    if (taskComplexity === 'complex' || persona === 'epidemiologist') {
+      model = 'gemini-3.1-pro-preview';
+    } else if (taskComplexity === 'fast' || persona === 'rapid_dispatch') {
+      model = 'gemini-3.1-flash-lite-preview';
+    }
+    if (!isGeminiModelAvailable(model)) {
+      model = isGeminiModelAvailable('gemini-3.1-flash-lite-preview')
+        ? 'gemini-3.1-flash-lite-preview'
+        : 'gemini-3-flash-preview';
     }
 
-    let systemInstruction = `You are MEDRESQ AI, the operational medical assistant for Primary Health Centres (PHCs) in India (specifically Rajasthan National Health Mission).
-You assist Medical Officers, Staff Nurses, and Block Health Officers with:
-- Clinical inventory forecasting & critical stockout triage (ORS, IV fluids, antivenom, antibiotics)
-- Bed occupancy & inpatient surge load redistribution
-- Supply chain RMSCL / e-Aushadhi indenting and FEFO batch rotation
-- Seasonal preparedness protocols (heatwave dehydration, monsoon dengue/malaria vectors).
-Provide actionable, respectful, highly structured guidance. Never prescribe dangerous unauthorized treatments. Non-diagnostic.`;
+    let systemInstruction =
+      `You are MEDRESQ AI, the operational supply-chain resilience assistant for Primary Health Centres (PHCs) in India.
+You assist Medical Officers, Pharmacists, and Block Health Officers with:
+- Medicine inventory monitoring & critical stock-out risk triage (ORS, IV fluids, antivenom, antibiotics)
+- FEFO batch expiry prioritization & safety stock / reorder point (ROP) governance
+- Supply chain RMSCL / e-Aushadhi indenting and inter-PHC lateral transfers
+- Seasonal demand impact preparedness (heatwave dehydration, monsoon vector-borne demand).
+Provide actionable, clearly structured supply-chain guidance. Never perform clinical prescribing or autonomous treatment decisions.` +
+      guardrailContext;
 
     if (persona === 'medresq_engine') {
-      systemInstruction = `You are MEDRESQ AI, a specialized clinical supply chain prediction engine built for Primary Health Centers (PHCs) and Community Health Centers (CHCs) in Rajasthan, India. Your task is to prevent critical stockouts of essential drugs and supplies before they occur.
-
-INPUT DATA YOU WILL RECEIVE:
-1. Hospital / PHC Name and Location.
-2. Current Inventory counts for key emergency drugs (e.g., Anti-Snake Venom, Oxytocin, IV Fluids, Paracetamol IV, ORS).
-3. Current daily patient admission trends and weather/seasonal factors (e.g., May heatwave, post-monsoon rain).
-4. Nearby PHC stock levels within a 30 km radius.
+      systemInstruction =
+        `You are MEDRESQ AI, a specialized PHC medicine supply-chain prediction engine built for Primary Health Centers (PHCs) and Community Health Centers (CHCs) in India. Your task is to prevent critical stockouts of essential drugs and supplies before they occur.
 
 YOUR OUTPUT RULES:
-1. PREDICT: Calculate stock depletion timeline (Days Remaining = Current Stock / Daily Burn Rate). Adjust burn rate up by 30% to 50% if a seasonal surge (e.g., Heatstroke or Dengue) is flagged.
-2. RISK RATING: Assign a risk level: SAFE (>7 days left), WARNING (3–7 days left), CRITICAL (<3 days left).
+1. PREDICT: Calculate stock depletion timeline (Days Remaining = Current Stock / Daily Burn Rate). If daily burn rate is 0 or missing, report "Insufficient data / unable to determine". Adjust burn rate up by 30% to 50% if a seasonal surge is flagged and label it clearly as an estimate.
+2. RISK RATING: Assign a risk level: SAFE (>7 days left), WARNING (3–7 days left), CRITICAL (<3 days left or 0 stock).
 3. SMART REALLOCATION: Identify if a neighboring facility has surplus stock (>14 days left) and propose an exact transfer amount and delivery plan using local health logistics.
-4. FORMAT: Always return your analysis in structured JSON format with keys: \`drug_name\`, \`days_left\`, \`risk_level\`, \`surge_factor_applied\`, \`reallocation_plan\`, and \`rmscl_requisition_needed\`.
-
-Keep answers concise, medically accurate for Indian rural healthcare standards, and actionable for a Medical Officer in Charge (MOIC).`;
+4. FORMAT: Return structured JSON or a clear structured breakdown with keys: \`drug_name\`, \`days_left\`, \`risk_level\`, \`surge_factor_applied\`, \`reallocation_plan\`, and \`rmscl_requisition_needed\`.` +
+        guardrailContext;
     } else if (persona === 'epidemiologist') {
-      systemInstruction = `You are the Chief District Epidemiologist & Outbreak Forecaster AI for MEDRESQ AI.
-Your focus: Advanced epidemiological calculations, surge transmission modeling, vector-borne clustering (dengue, malaria), heatstroke wave impacts, and mathematical resource consumption forecasts.
-Provide deep, data-driven analytical insights, probability vectors, and preventive stock staging recommendations.`;
+      systemInstruction =
+        `You are the District Epidemiological & Demand Forecaster AI for MEDRESQ AI.
+Your focus: Seasonal demand modeling, vector-borne surge impact on PHC drug buffers, heatstroke dehydration supply staging, and distinguishing actual surveillance counts from model estimates.` +
+        guardrailContext;
     } else if (persona === 'rapid_dispatch') {
-      systemInstruction = `You are the Rapid Dispatch & Emergency Triage Assistant for MEDRESQ AI.
-Your focus: Ultra-fast, immediate action checklists, emergency ambulance coordination, inter-facility transfer approvals, and emergency restock indents.
-Keep responses concise, urgent, step-by-step, and bullet-pointed for immediate frontline execution.`;
+      systemInstruction =
+        `You are the Rapid Dispatch & Supply Triage Assistant for MEDRESQ AI.
+Your focus: Ultra-fast checklists for emergency stock stabilization kits, cold-chain transport verification, inter-facility transfer approvals, and urgent restock indents.` +
+        guardrailContext;
     }
 
-    if (ai) {
+    if (ai && isGeminiModelAvailable(model)) {
       try {
         const contents = messages.map((m: { role: string; text: string }) => ({
           role: m.role === 'user' ? 'user' : 'model',
-          parts: [{ text: m.text }]
+          parts: [{ text: String(m.text || '') }]
         }));
 
         const response = await ai.models.generateContent({
           model,
           contents,
           config: {
-            systemInstruction
+            systemInstruction,
+            temperature: 0.25
           }
         });
 
-        const reply = response.text || 'No response generated.';
-        return res.json({
-          success: true,
-          reply,
-          modelUsed: model,
-          persona
-        });
+        const reply = response.text || '';
+        if (reply.trim()) {
+          return res.json({
+            success: true,
+            reply,
+            modelUsed: model,
+            persona
+          });
+        }
       } catch (error) {
         recordGeminiModelError(model, error);
       }
     }
 
     const lastUserMessage = messages[messages.length - 1]?.text || '';
-    const fallbackReply = `**Operational Advisory (${persona.replace('_', ' ').toUpperCase()})**\n\nBased on current facility telemetry for **PHC Osian (24x7)**${lastUserMessage ? ` regarding *"${lastUserMessage.slice(0, 80)}"*` : ''}:\n\n1. **Critical Stock Triage**: Oral Rehydration Salts (ORS) stand at **210 sachets** (~3.6 days buffer at 58/day burn rate) and Normal Saline 0.9% stands at **64 bottles** (4.0 days buffer). Approve the lateral transfer of **600 ORS sachets from PHC Mandore** (55 km, ~1.2h transit) immediately.\n2. **Inpatient Capacity**: **17 of 20 sanctioned beds (85%)** are occupied. Expedite morning discharge reviews and coordinate step-down referrals with **PHC Balesar** (6 available beds).\n3. **FEFO Dispensing**: Prioritize **Paracetamol 500mg Batch PCM-T-440** (expiring 2026-11-30) across OPD counters.`;
+    const critMeds = activeMeds.filter((m) => m.stockoutRisk === 'CRITICAL' || m.stockoutRisk === 'WARNING');
+    const expMeds = activeMeds.filter((m) => m.fefoPriority === 'URGENT' || m.fefoPriority === 'EXPIRING_SOON');
+    const pendingTransfers = redistributions.filter((r) => r.status === 'PENDING_REVIEW' || r.status === 'PROPOSED');
+    const approvedPendingDispatch = redistributions.filter((r) => r.status === 'APPROVED');
+    const activeOrdersList = orders.filter((o) => o.status !== 'DELIVERED' && o.status !== 'RECEIVED' && o.status !== 'CANCELLED');
+
+    const fallbackReply = `**Operational Supply-Chain Copilot Advisory (${persona.replace('_', ' ').toUpperCase()} — ${phcName})**\n\nBased on live deterministic operational telemetry${lastUserMessage ? ` for *"${lastUserMessage.slice(0, 80)}"*` : ''}:\n\n1. **Highest Shortage Risk Medicines (${critMeds.length} flagged in ${phcName})**:\n${critMeds.slice(0, 4).map((m) => `   - **${m.name}** (\`${m.id}\`): **${m.currentStock} ${m.unit}** usable (${m.projectedStockoutDays}d cover vs Safety Threshold/ROP ${m.minStockLevel} ${m.unit}, Burn: ${m.dailyConsumption}/day)`).join('\n') || '   - All core NLEM medicines are currently above critical floor.'}\n2. **FEFO Near-Expiry Queue (${expMeds.length} batches)**:\n${expMeds.slice(0, 3).map((m) => `   - **${m.name}** (Batch \`${m.batchNumber}\`, Expiry: \`${m.expiryDate}\`, Priority: **${m.fefoPriority}**)`).join('\n') || '   - No batches expiring within immediate FEFO threshold.'}\n3. **Inter-PHC Transfers & Replenishment Pipeline**:\n   - **${pendingTransfers.length} Pending Medical Officer Review**: ${pendingTransfers.slice(0, 2).map((r) => `${r.recommendedTransferQuantity || r.transferQuantity} units of ${r.medicineName} (${r.sourcePHCName || r.sourcePHC?.name} → ${r.destinationPHCName || r.targetPHC?.name})`).join('; ') || 'None'}\n   - **${approvedPendingDispatch.length} Approved & Pending Dispatch** · **${activeOrdersList.length} Active Warehouse Indents** in RMSCL pipeline.\n\n*Note: Actual recorded stock figures are shown above; demand projections are model estimates. Clinical prescribing is not performed by this supply-chain copilot.*`;
     return res.json({
       success: true,
       reply: fallbackReply,
-      modelUsed: `${model} (Local Clinical Protocol Engine)`,
+      modelUsed: `${model} (Live Operational Telemetry Engine)`,
       persona
     });
   });
@@ -1994,10 +2522,14 @@ Keep responses concise, urgent, step-by-step, and bullet-pointed for immediate f
     const {
       id,
       customTransfer,
-      initialStatus
+      initialStatus,
+      actor,
+      reviewerName
     }: {
       id?: string;
       initialStatus?: 'PENDING_REVIEW' | 'APPROVED';
+      actor?: string;
+      reviewerName?: string;
       customTransfer?: {
         medicineName: string;
         transferQuantity: number;
@@ -2010,6 +2542,8 @@ Keep responses concise, urgent, step-by-step, and bullet-pointed for immediate f
         clinicalRationale?: string;
       };
     } = req.body;
+    const reviewerActor =
+      (actor || reviewerName || '').trim() || 'Dr. S.C. Bishnoi (Senior Medical Officer I/C)';
 
     let item = id ? redistributions.find((r) => r.id === id) : undefined;
     let isNewCustomItem = false;
@@ -2124,6 +2658,13 @@ Keep responses concise, urgent, step-by-step, and bullet-pointed for immediate f
     // Validate donor usable stock AND configured minimum buffer before approving!
     const donorValidation = validateDonorStockForTransfer(sourceMed, transferQty, donorName);
     if (!donorValidation.ok) {
+      logCloudEvent('WARNING', 'supply_chain.transfer', 'Inter-PHC transfer approval rejected: insufficient donor buffer', {
+        transferId: item.id,
+        donorName,
+        recipientName,
+        medicineName: sourceMed.name,
+        requestedQuantity: transferQty
+      });
       return res.status(400).json({
         error: donorValidation.error,
         code: 'INSUFFICIENT_DONOR_BUFFER',
@@ -2167,13 +2708,32 @@ Keep responses concise, urgent, step-by-step, and bullet-pointed for immediate f
       });
     }
 
-    // Reserve stock on donor exactly once on approval (do not deduct physical stock until DISPATCHED)
-    if (!item.donorReserved && !item.donorDeducted) {
-      sourceMed.reservedStock = Math.max(0, (sourceMed.reservedStock || 0) + transferQty);
-      item.donorReserved = true;
-      item.reservedQuantity = transferQty;
+    // Execute donor deduction and recipient credit exactly once upon Medical Officer approval
+    if (!item.donorDeducted) {
+      const donorRes = applyFefoStockAdjustment(sourceMed, -transferQty);
+      if (!donorRes.ok) {
+        return res.status(400).json({
+          error: `Insufficient donor stock at ${donorName}: ${donorRes.error}`
+        });
+      }
+      if (item.donorReserved) {
+        const resQty = item.reservedQuantity || transferQty;
+        sourceMed.reservedStock = Math.max(0, (sourceMed.reservedStock || 0) - resQty);
+        item.donorReserved = false;
+        item.reservedQuantity = 0;
+      }
+      recalculateMedRisk(sourceMed);
+      item.donorDeducted = true;
+    }
+    if (!item.receiverCredited) {
+      applyFefoStockAdjustment(targetMed, transferQty);
+      recalculateMedRisk(targetMed);
+      item.receiverCredited = true;
     }
 
+    item.reviewedBy = reviewerActor;
+    item.reviewedAt = nowIso;
+    item.approvedBy = reviewerActor;
     item.approvedAt = nowIso;
     item.status = 'APPROVED';
     syncTransferFacilitySnapshots(item, sourceMed, targetMed);
@@ -2189,7 +2749,8 @@ Keep responses concise, urgent, step-by-step, and bullet-pointed for immediate f
       destination: recipientName,
       previousStatus: prevStatus,
       newStatus: 'APPROVED',
-      stockImpactSummary: `Approved & reserved ${transferQty} ${sourceMed.unit} at ${donorName} (Remaining unreserved usable: ${donorValidation.remainingUsableAfterTransfer} ${sourceMed.unit}, Min Buffer: ${donorValidation.minBuffer} ${sourceMed.unit})`
+      actor: reviewerActor,
+      stockImpactSummary: `Approved by ${reviewerActor}: deducted -${transferQty} ${sourceMed.unit} from ${donorName} (${sourceMed.currentStock} ${sourceMed.unit} remaining, Min Buffer: ${donorValidation.minBuffer} ${sourceMed.unit}) & credited +${transferQty} ${targetMed.unit} to ${recipientName} (${targetMed.currentStock} ${targetMed.unit} total)`
     });
     item.statusHistory = [...(item.statusHistory || []), historyEntry];
     supplyChainAuditLog.unshift(auditEntry);
@@ -2249,6 +2810,9 @@ Keep responses concise, urgent, step-by-step, and bullet-pointed for immediate f
     const nowIso = new Date().toISOString();
     let stockImpactSummary = '';
 
+    const reviewerActor =
+      (actor || '').trim() || 'Dr. S.C. Bishnoi (Senior Medical Officer I/C)';
+
     if (nextStatus === 'APPROVED') {
       const donorValidation = validateDonorStockForTransfer(sourceMed, transferQty, donorName);
       if (!donorValidation.ok) {
@@ -2257,68 +2821,73 @@ Keep responses concise, urgent, step-by-step, and bullet-pointed for immediate f
           code: 'INSUFFICIENT_DONOR_BUFFER'
         });
       }
-      if (!item.donorReserved && !item.donorDeducted) {
-        sourceMed.reservedStock = Math.max(0, (sourceMed.reservedStock || 0) + transferQty);
-        item.donorReserved = true;
-        item.reservedQuantity = transferQty;
-      }
-      item.approvedAt = item.approvedAt || nowIso;
-      stockImpactSummary = `Approved & reserved ${transferQty} ${sourceMed.unit} at ${donorName}`;
-    } else if (nextStatus === 'DISPATCHED') {
-      if (item.donorDeducted) {
-        return res.status(400).json({
-          error: `Transfer ${item.id} has already had donor stock deducted.`
-        });
-      }
-      const existingResQty = item.donorReserved ? (item.reservedQuantity || transferQty) : 0;
-      const donorValidation = validateDonorStockForTransfer(
-        sourceMed,
-        transferQty,
-        donorName,
-        existingResQty
-      );
-      if (!donorValidation.ok) {
-        return res.status(400).json({
-          error: donorValidation.error,
-          code: 'INSUFFICIENT_DONOR_BUFFER'
-        });
-      }
-      const donorRes = applyFefoStockAdjustment(sourceMed, -transferQty);
-      if (!donorRes.ok) {
-        return res.status(400).json({
-          error: `Insufficient donor stock at ${donorName}: ${donorRes.error}`
-        });
-      }
-      if (item.donorReserved) {
-        sourceMed.reservedStock = Math.max(0, (sourceMed.reservedStock || 0) - existingResQty);
-        item.donorReserved = false;
-        item.reservedQuantity = 0;
-      }
-      recalculateMedRisk(sourceMed);
-      item.donorDeducted = true;
-      item.dispatchedAt = nowIso;
-      stockImpactSummary = `Dispatched & deducted -${transferQty} ${sourceMed.unit} from ${donorName} (${sourceMed.currentStock} ${sourceMed.unit} remaining)`;
-    } else if (nextStatus === 'RECEIVED') {
       if (!item.donorDeducted) {
-        return res.status(400).json({
-          error: `Cannot mark transfer ${item.id} as Received before donor stock has been Dispatched.`
-        });
+        const donorRes = applyFefoStockAdjustment(sourceMed, -transferQty);
+        if (!donorRes.ok) {
+          return res.status(400).json({
+            error: `Insufficient donor stock at ${donorName}: ${donorRes.error}`
+          });
+        }
+        recalculateMedRisk(sourceMed);
+        item.donorDeducted = true;
       }
-      if (item.receiverCredited) {
-        return res.status(400).json({
-          error: `Transfer ${item.id} has already been credited to recipient inventory.`
-        });
+      if (!item.receiverCredited) {
+        applyFefoStockAdjustment(targetMed, transferQty);
+        recalculateMedRisk(targetMed);
+        item.receiverCredited = true;
       }
-      applyFefoStockAdjustment(targetMed, transferQty);
-      recalculateMedRisk(targetMed);
-      item.receiverCredited = true;
+      item.reviewedBy = reviewerActor;
+      item.reviewedAt = item.reviewedAt || nowIso;
+      item.approvedBy = reviewerActor;
+      item.approvedAt = item.approvedAt || nowIso;
+      stockImpactSummary = `Approved by ${reviewerActor}: transferred ${transferQty} ${sourceMed.unit} from ${donorName} to ${recipientName}`;
+    } else if (nextStatus === 'DISPATCHED') {
+      if (!item.donorDeducted) {
+        const existingResQty = item.donorReserved ? (item.reservedQuantity || transferQty) : 0;
+        const donorValidation = validateDonorStockForTransfer(
+          sourceMed,
+          transferQty,
+          donorName,
+          existingResQty
+        );
+        if (!donorValidation.ok) {
+          return res.status(400).json({
+            error: donorValidation.error,
+            code: 'INSUFFICIENT_DONOR_BUFFER'
+          });
+        }
+        const donorRes = applyFefoStockAdjustment(sourceMed, -transferQty);
+        if (!donorRes.ok) {
+          return res.status(400).json({
+            error: `Insufficient donor stock at ${donorName}: ${donorRes.error}`
+          });
+        }
+        if (item.donorReserved) {
+          sourceMed.reservedStock = Math.max(0, (sourceMed.reservedStock || 0) - existingResQty);
+          item.donorReserved = false;
+          item.reservedQuantity = 0;
+        }
+        recalculateMedRisk(sourceMed);
+        item.donorDeducted = true;
+      }
+      item.dispatchedAt = nowIso;
+      stockImpactSummary = `Dispatched ${transferQty} ${sourceMed.unit} from ${donorName} (${sourceMed.currentStock} ${sourceMed.unit} remaining)`;
+    } else if (nextStatus === 'RECEIVED') {
+      if (!item.receiverCredited) {
+        applyFefoStockAdjustment(targetMed, transferQty);
+        recalculateMedRisk(targetMed);
+        item.receiverCredited = true;
+      }
       item.receivedAt = nowIso;
       item.completedAt = nowIso;
-      stockImpactSummary = `Received & credited +${transferQty} ${targetMed.unit} to ${recipientName} (${targetMed.currentStock} ${targetMed.unit} total)`;
+      stockImpactSummary = `Received ${transferQty} ${targetMed.unit} at ${recipientName} (${targetMed.currentStock} ${targetMed.unit} total)`;
     } else if (nextStatus === 'REJECTED') {
+      item.reviewedBy = reviewerActor;
+      item.reviewedAt = nowIso;
+      item.rejectedBy = reviewerActor;
       item.rejectedAt = nowIso;
-      item.rejectionReason = reason || 'Rejected during clinical/stock review';
-      stockImpactSummary = `Transfer rejected (${item.rejectionReason}); no stock deducted`;
+      item.rejectionReason = reason || 'Rejected by Medical Officer during clinical review';
+      stockImpactSummary = `Transfer rejected by ${reviewerActor} (${item.rejectionReason}); no stock deducted or transferred`;
     } else if (nextStatus === 'CANCELLED') {
       if (item.donorReserved) {
         const resQty = item.reservedQuantity || transferQty;
@@ -2346,7 +2915,7 @@ Keep responses concise, urgent, step-by-step, and bullet-pointed for immediate f
       previousStatus: prevStatus,
       newStatus: nextStatus,
       stockImpactSummary,
-      actor,
+      actor: reviewerActor,
       notes: reason
     });
     item.statusHistory = [...(item.statusHistory || []), historyEntry];
@@ -2407,22 +2976,26 @@ Keep responses concise, urgent, step-by-step, and bullet-pointed for immediate f
       const ai = getGemini();
       if (ai) {
         try {
-          const prompt = `You are an MBBS Chief Medical Officer & Smart Health Supply Chain Resilience AI Advisor for ${facilityName} (Ambient Temp: ${temperatureC}°C).
-Analyze this ground-level clinical-supply emergency:
+          const prompt = `You are a Chief Supply-Chain Resilience AI Advisor for ${facilityName} (Ambient Temp: ${temperatureC}°C).
+Analyze this ground-level PHC supply-chain emergency:
 - Scenario: ${emergencyScenario}
-- Patient Vitals / Presentation: ${patientVitals}
+- Presentation Context: ${patientVitals}
 - Today's IDSP Syndromic Tally: ${JSON.stringify(syndromicTally)}
 - Local Critical Drug Stock: ${JSON.stringify(localStockSummary)}
 
+STRICT GUARDRAILS:
+- Focus on emergency medicine kit availability, cold-chain integrity, lateral peer-PHC stock redistribution, and RMSCL warehouse indenting.
+- Do NOT perform patient-specific clinical prescribing or invent unverified statistics.
+
 Provide a concise, high-impact JSON response with keys:
-- "clinicalSurvivalAssessment": 1-2 sentences quantifying how many critical patients local stock can treat and the exact Golden-Hour clinical risk.
-- "splitDoseProtocol": Exact immediate stabilization loading dose to administer at the PHC right now before transit.
+- "clinicalSurvivalAssessment": 1-2 sentences quantifying how many critical emergency kits local stock can support and the immediate supply-chain bottleneck risk.
+- "splitDoseProtocol": Immediate emergency kit staging & cold-chain verification protocol at the PHC casualty store before transit.
 - "lateralSupplyRescue": Exact peer-to-peer lateral stock intercept or FRU stock-lock directive (facility name, distance, ETA, and units locked).
 - "epidemiologicalForecast": How today's syndromic spike impacts 72-hour supply resilience and recommended autonomous indent.`;
 
-          const copilotModel = isGeminiModelAvailable('gemini-3.8-flash')
-            ? 'gemini-3.8-flash'
-            : 'gemini-3.1-flash-lite';
+          const copilotModel = isGeminiModelAvailable('gemini-3-flash-preview')
+            ? 'gemini-3-flash-preview'
+            : 'gemini-3.1-flash-lite-preview';
           const response = await ai.models.generateContent({
             model: copilotModel,
             contents: prompt,
@@ -2439,18 +3012,18 @@ Provide a concise, high-impact JSON response with keys:
             analysis: parsed
           });
         } catch (aiErr) {
-          recordGeminiModelError('gemini-3.8-flash', aiErr);
+          recordGeminiModelError('gemini-3-flash-preview', aiErr);
         }
       }
 
-      // Deterministic clinical fallback if API key is not configured in environment
+      // Deterministic supply-chain fallback if API key is not configured or rate-limited
       return res.json({
         success: true,
-        model: 'gemini-3.8-flash',
+        model: 'gemini-3-flash-preview (Deterministic Telemetry)',
         analysis: {
-          clinicalSurvivalAssessment: `Critical Golden-Hour Bottleneck at ${facilityName}: Current local stock covers only 1.1 full standard treatment regimens. Immediate split-dose stabilization + peer-to-peer FRU stock lock required to prevent mortality.`,
-          splitDoseProtocol: `Administer Immediate Loading Dose at PHC Casualty (verified ILR Cold Chain +4.2°C) over 45–60 mins with IV crystalloid resuscitation before 108 ambulance departure.`,
-          lateralSupplyRescue: `Locked maintenance dose + HDU Bed #4 at CHC Mathania (18.4 km, 22 min Green Corridor ETA) AND initiated 45-min lateral peer transfer from PHC Tinwari.`,
+          clinicalSurvivalAssessment: `Critical Supply Buffer Bottleneck at ${facilityName}: Current local stock covers only 1.1 full emergency stabilization kits. Immediate lateral stock lock + warehouse indent required to prevent stock-out.`,
+          splitDoseProtocol: `Stage Emergency Stabilization Kit from PHC Casualty Store (verified ILR Cold Chain +4.2°C) and verify FEFO batch integrity prior to 108 ambulance dispatch.`,
+          lateralSupplyRescue: `Locked reserve buffer at CHC Mathania (18.4 km, 22 min Green Corridor ETA) AND initiated 45-min lateral peer transfer from PHC Tinwari.`,
           epidemiologicalForecast: `OPD syndromic velocity indicates +38% surge over 72-hour warehouse lead time; autonomous RMSCL emergency indent + lateral rebalance triggered.`
         }
       });
@@ -2472,31 +3045,33 @@ Provide a concise, high-impact JSON response with keys:
         resourceId = '6176ee09-3d56-4a3b-8115-21841576b2f6'
       } = req.body;
 
+      const rawGovKey = process.env.DATA_GOV_IN_API_KEY || '';
       const apiKey =
-        process.env.DATA_GOV_IN_API_KEY ||
-        '579b464db66ec23bdd000001cdd3946e44ce4aad7209ff7b23ac571b';
+        rawGovKey && !rawGovKey.includes('YOUR_DATA_GOV_IN_API_KEY') ? rawGovKey.trim() : '';
 
       let liveGovRecords: any[] = [];
       let govApiReachable = false;
 
-      // Attempt live fetch from official Open Government Data (OGD) India API (api.data.gov.in)
-      try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 3500);
-        const url = `https://api.data.gov.in/resource/${encodeURIComponent(
-          resourceId
-        )}?api-key=${encodeURIComponent(apiKey)}&format=json&limit=10`;
-        const govRes = await fetch(url, { signal: controller.signal });
-        clearTimeout(timeout);
-        if (govRes.ok) {
-          const govJson: any = await govRes.json();
-          if (Array.isArray(govJson?.records) && govJson.records.length > 0) {
-            liveGovRecords = govJson.records;
-            govApiReachable = true;
+      // Attempt live fetch from official Open Government Data (OGD) India API (api.data.gov.in) when key is configured
+      if (apiKey) {
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 3500);
+          const url = `https://api.data.gov.in/resource/${encodeURIComponent(
+            resourceId
+          )}?api-key=${encodeURIComponent(apiKey)}&format=json&limit=10`;
+          const govRes = await fetch(url, { signal: controller.signal });
+          clearTimeout(timeout);
+          if (govRes.ok) {
+            const govJson: any = await govRes.json();
+            if (Array.isArray(govJson?.records) && govJson.records.length > 0) {
+              liveGovRecords = govJson.records;
+              govApiReachable = true;
+            }
           }
+        } catch {
+          // Fallback to cached OGD India RHS 2025-26 & NHM-HMIS catalog records if offline/timeout
         }
-      } catch {
-        // Fallback to cached OGD India RHS 2025-26 & NHM-HMIS catalog records if offline/timeout
       }
 
       // Structured Open Government Data (data.gov.in) Datasets for Rural Health Statistics (RHS), HMIS & IDSP
@@ -3311,6 +3886,28 @@ ${JSON.stringify(executions.map((e) => ({ agent: e.agentName, tool: e.toolCalled
     }
   });
 
+  // Safe global API error handler — prevents leaking stack traces, API keys, or env vars to client
+  app.use(
+    '/api',
+    (
+      err: unknown,
+      req: express.Request,
+      res: express.Response,
+      _next: express.NextFunction
+    ) => {
+      logCloudEvent('ERROR', 'api.unhandled_error', 'Unhandled API route exception', {
+        method: req.method,
+        path: req.originalUrl,
+        reason: String((err as any)?.message || 'Internal error')
+          .replace(/AIza[0-9A-Za-z\-_]+/g, '[REDACTED]')
+          .slice(0, 180)
+      });
+      res.status(500).json({
+        error: 'An unexpected server error occurred. Please try again.'
+      });
+    }
+  );
+
   // Vite middleware setup vs static build serving
   const isProduction =
     process.env.NODE_ENV === 'production' ||
@@ -3333,7 +3930,13 @@ ${JSON.stringify(executions.map((e) => ({ agent: e.agentName, tool: e.toolCalled
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`MEDRESQ AI Server running on http://0.0.0.0:${PORT}`);
+    logCloudEvent('INFO', 'server.startup', `MEDRESQ AI Server listening on http://0.0.0.0:${PORT}`, {
+      port: PORT,
+      mode: isProduction ? 'production' : 'development',
+      gcpProjectId: process.env.GOOGLE_CLOUD_PROJECT || 'ultimate-correlate-zsmzh',
+      geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+      cloudSqlConfigured: Boolean(process.env.SQL_HOST && process.env.SQL_DB_NAME)
+    });
   });
 }
 

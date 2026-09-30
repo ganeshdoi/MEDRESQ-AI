@@ -570,6 +570,85 @@ export const HealthPreparedness: React.FC = () => {
         </div>
       </div>
 
+      {/* 1A. 4-Stage Causal Chain & Provenance Strip: Observed -> Calculated -> Forecast/AI Signal -> Recommendation */}
+      <div className="bg-white rounded-xl border border-slate-200/90 shadow-xs p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-slate-900 text-white">
+              Decision-Support Causal Flow
+            </span>
+            <span className="text-xs font-bold text-slate-800">
+              Observed Data → Demand Signal → Deterministic Calculation → Forecast Risk → Operational Response
+            </span>
+          </div>
+          <span className="text-[11px] font-mono text-slate-500">
+            Deterministic stock/ROP math runs locally; AI/forecast signals provide non-diagnostic decision support only
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+          <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-slate-200 text-slate-900">
+                1. OBSERVED
+              </span>
+              <span className="text-[10px] font-mono text-slate-500">Recorded Ledger</span>
+            </div>
+            <div className="font-bold text-slate-900 mt-1">
+              Facility Stock &amp; Historical OPD Burn
+            </div>
+            <p className="text-[11px] text-slate-600 leading-relaxed">
+              Physical batches ({medicines.length} items at {selectedPHC.name}), 30-day historical dispensing rate, and baseline footfall ({regionalProfile.baselineFootfall}/day).
+            </p>
+          </div>
+
+          <div className="p-3 rounded-xl bg-indigo-50/60 border border-indigo-200 space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-indigo-100 text-indigo-950 border border-indigo-300">
+                2. CALCULATED
+              </span>
+              <span className="text-[10px] font-mono text-indigo-700">Deterministic Code</span>
+            </div>
+            <div className="font-bold text-slate-900 mt-1">
+              Usable Stock, FEFO, Safety Buffer &amp; ROP
+            </div>
+            <p className="text-[11px] text-slate-600 leading-relaxed">
+              Computed deterministically by local code (<code className="font-mono text-[10px]">inventoryForecast.ts</code>): excludes expired batches, computes Safety Stock, Reorder Point, and lead-time gap.
+            </p>
+          </div>
+
+          <div className="p-3 rounded-xl bg-amber-50/70 border border-amber-200 space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-amber-100 text-amber-950 border border-amber-300">
+                3. FORECAST / AI SIGNAL
+              </span>
+              <span className="text-[10px] font-mono text-amber-800">{activeScenarioMult}x Surge</span>
+            </div>
+            <div className="font-bold text-slate-900 mt-1">
+              Seasonal Demand Signal ({regionalProfile.seasonLabel})
+            </div>
+            <p className="text-[11px] text-slate-600 leading-relaxed">
+              Models {customTemp}°C / {customHumidity}% RH &amp; {customFootfall} OPD/day demand elasticity + optional Gemini AI narrative synthesis (decision-support only).
+            </p>
+          </div>
+
+          <div className="p-3 rounded-xl bg-emerald-50/70 border border-emerald-200 space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-emerald-100 text-emerald-950 border border-emerald-300">
+                4. RECOMMENDATION
+              </span>
+              <span className="text-[10px] font-mono text-emerald-800">MO Approval Gate</span>
+            </div>
+            <div className="font-bold text-slate-900 mt-1">
+              Operational Replenishment &amp; Lateral Transfer
+            </div>
+            <p className="text-[11px] text-slate-600 leading-relaxed">
+              Suggests warehouse indent quantities or sister-PHC surplus transfers. Requires explicit Medical Officer review before execution.
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* 1B. Location Geography, District Hazard Profile & Seasonal Selector Bar */}
       <div className="bg-white rounded-xl border border-slate-200/90 shadow-xs p-4 sm:p-5 space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-4">
@@ -1553,139 +1632,218 @@ export const HealthPreparedness: React.FC = () => {
           <table className="w-full text-left text-xs" role="table">
             <thead className="bg-slate-100/90 border-b border-slate-200 text-slate-700 font-bold uppercase text-[10px] tracking-wider">
               <tr>
-                <th scope="col" className="px-4 py-3">Pharmaceutical / Fluid</th>
-                <th scope="col" className="px-3 py-3 text-right">Historical Base</th>
-                <th scope="col" className="px-3 py-3 text-right">Current Burn</th>
-                <th scope="col" className="px-3 py-3 text-right">Weather Surge Burn</th>
-                <th scope="col" className="px-3 py-3 text-right">Physical Stock</th>
-                <th scope="col" className="px-3 py-3 text-center">Days to Depletion</th>
-                <th scope="col" className="px-3 py-3 text-center">Lead Time Deficit</th>
-                <th scope="col" className="px-3 py-3 text-center">Risk Score</th>
-                <th scope="col" className="px-3 py-3 text-right">Intervention Actions</th>
+                <th scope="col" className="px-4 py-3">
+                  Medicine &amp; Demand Signal
+                </th>
+                <th scope="col" className="px-3 py-3 text-right">
+                  <span className="block text-[9px] font-mono text-slate-500">[OBSERVED]</span>
+                  Base / Current Burn
+                </th>
+                <th scope="col" className="px-3 py-3 text-right">
+                  <span className="block text-[9px] font-mono text-amber-800">[FORECAST SIGNAL]</span>
+                  Surge Burn
+                </th>
+                <th scope="col" className="px-3 py-3 text-right">
+                  <span className="block text-[9px] font-mono text-indigo-700">[OBSERVED / CALC]</span>
+                  Stock vs Safety Buffer
+                </th>
+                <th scope="col" className="px-3 py-3 text-center">
+                  <span className="block text-[9px] font-mono text-indigo-700">[CALCULATED]</span>
+                  Days &amp; Lead Deficit
+                </th>
+                <th scope="col" className="px-3 py-3 text-center">
+                  <span className="block text-[9px] font-mono text-rose-800">[RISK LEVEL]</span>
+                  Surge Risk
+                </th>
+                <th scope="col" className="px-3 py-3 text-right">
+                  <span className="block text-[9px] font-mono text-emerald-800">[RECOMMENDATION]</span>
+                  Review &amp; Action
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {suppliesAnalysis.map((item) => (
-                <tr key={item.id} className="hover:bg-slate-50/80 transition-colors">
-                  {/* Name & Category */}
-                  <td className="px-4 py-3.5">
-                    <div className="font-bold text-slate-900">{item.name}</div>
-                    <div className="text-[11px] text-slate-500 font-mono mt-0.5">
-                      {item.category} • Buffer: {item.criticalBufferMin} {item.unit}
-                    </div>
-                  </td>
-
-                  {/* Historical Base */}
-                  <td className="px-3 py-3.5 text-right font-mono text-slate-600">
-                    <div>{item.historicalBaseBurn}</div>
-                    <div className="text-[10px] text-slate-400 font-sans">{item.unit}/day</div>
-                  </td>
-
-                  {/* Current Burn */}
-                  <td className="px-3 py-3.5 text-right font-mono text-slate-800 font-bold">
-                    <div>{item.currentBurn}</div>
-                    <div className="text-[10px] text-slate-400 font-sans">{item.unit}/day</div>
-                  </td>
-
-                  {/* Projected Weather Surge Burn */}
-                  <td className="px-3 py-3.5 text-right font-mono text-rose-700 font-bold">
-                    <div className="text-sm">{item.projectedDailyBurn}</div>
-                    <div className="text-[10px] text-rose-800 font-sans">
-                      +{(
-                        ((item.projectedDailyBurn - item.historicalBaseBurn) / item.historicalBaseBurn) *
-                        100
-                      ).toFixed(0)}
-                      % surge
-                    </div>
-                  </td>
-
-                  {/* Physical Stock & Pipeline */}
-                  <td className="px-3 py-3.5 text-right font-mono">
-                    <div className="text-sm font-bold text-slate-900">{item.currentStock}</div>
-                    {item.pendingOrders > 0 ? (
-                      <div className="text-[10px] text-blue-700 font-sans font-semibold">
-                        +{item.pendingOrders} in-transit
+              {suppliesAnalysis.map((item) => {
+                const surgePct = Math.round(
+                  ((item.projectedDailyBurn - item.historicalBaseBurn) /
+                    Math.max(1, item.historicalBaseBurn)) *
+                    100
+                );
+                return (
+                  <tr key={item.id} className="hover:bg-slate-50/80 transition-colors">
+                    {/* Name, Category & Demand Signal */}
+                    <td className="px-4 py-3.5 max-w-xs">
+                      <div className="font-bold text-slate-900">{item.name}</div>
+                      <div className="text-[11px] text-slate-500 font-mono mt-0.5">
+                        {item.category}
                       </div>
-                    ) : (
-                      <div className="text-[10px] text-slate-400 font-sans">No pending orders</div>
-                    )}
-                  </td>
+                      <div className="text-[11px] text-amber-900 bg-amber-50/80 border border-amber-200/80 rounded px-2 py-0.5 mt-1 line-clamp-2">
+                        <strong>Signal:</strong> {item.clinicalDriverNote}
+                      </div>
+                    </td>
 
-                  {/* Days to Depletion */}
-                  <td className="px-3 py-3.5 text-center font-mono">
-                    <span
-                      className={`inline-block px-2.5 py-1 rounded-full text-xs font-bold ${
-                        item.daysOfSafeStock <= item.leadTimeDays
-                          ? 'bg-rose-100 text-rose-950 border border-rose-300'
-                          : item.daysOfSafeStock <= item.leadTimeDays * 1.8
-                          ? 'bg-amber-100 text-amber-950 border border-amber-300'
-                          : 'bg-emerald-100 text-emerald-950 border border-emerald-300'
-                      }`}
-                    >
-                      {item.daysOfSafeStock} Days
-                    </span>
-                  </td>
+                    {/* Observed Base & Current Burn */}
+                    <td className="px-3 py-3.5 text-right font-mono text-slate-700">
+                      <div>
+                        Base: <strong>{item.historicalBaseBurn}</strong> {item.unit}/d
+                      </div>
+                      <div className="text-[11px] text-slate-900 font-bold mt-0.5">
+                        Logged: {item.currentBurn} {item.unit}/d
+                      </div>
+                    </td>
 
-                  {/* Lead Time Deficit Gap */}
-                  <td className="px-3 py-3.5 text-center font-mono">
-                    {item.deficitDays > 0 ? (
-                      <span className="text-rose-700 font-bold flex items-center justify-center gap-1">
-                        <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
-                        <span>-{item.deficitDays}d Deficit</span>
-                      </span>
-                    ) : (
-                      <span className="text-emerald-700 font-medium">
-                        +{(Math.abs(item.deficitDays)).toFixed(1)}d Buffer Safe
-                      </span>
-                    )}
-                  </td>
+                    {/* Projected Weather Surge Burn */}
+                    <td className="px-3 py-3.5 text-right font-mono text-rose-700 font-bold">
+                      <div className="text-sm">{item.projectedDailyBurn} {item.unit}/d</div>
+                      <div className="text-[10px] text-rose-800 font-sans">
+                        +{surgePct}% seasonal surge
+                      </div>
+                    </td>
 
-                  {/* Risk Score & Status Badge */}
-                  <td className="px-3 py-3.5 text-center">
-                    <div className="flex flex-col items-center gap-1">
+                    {/* Usable Stock Position vs Safety/Buffer Position */}
+                    <td className="px-3 py-3.5 text-right font-mono">
+                      <div className="text-sm font-bold text-slate-900">
+                        Usable: {item.currentStock} {item.unit}
+                      </div>
+                      <div className="text-[10px] text-slate-600 font-sans">
+                        Safety Stock: <strong>{item.safetyStock}</strong> • ROP: <strong>{item.reorderPoint}</strong>
+                      </div>
+                      {item.pendingOrders > 0 ? (
+                        <div className="text-[10px] text-blue-700 font-sans font-semibold">
+                          +{item.pendingOrders} in-transit
+                        </div>
+                      ) : (
+                        <div className="text-[10px] text-slate-400 font-sans">
+                          Min Buffer: {item.criticalBufferMin} {item.unit}
+                        </div>
+                      )}
+                    </td>
+
+                    {/* Days to Depletion & Lead Time Deficit Gap */}
+                    <td className="px-3 py-3.5 text-center font-mono">
                       <span
-                        className={`text-xs font-bold font-mono px-2 py-0.5 rounded ${
-                          item.riskScore >= 70
-                            ? 'bg-rose-100 text-rose-950'
-                            : item.riskScore >= 45
-                            ? 'bg-amber-100 text-amber-950'
-                            : 'bg-emerald-100 text-emerald-950'
+                        className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                          item.daysOfSafeStock <= item.leadTimeDays
+                            ? 'bg-rose-100 text-rose-950 border border-rose-300'
+                            : item.daysOfSafeStock <= item.leadTimeDays * 1.8
+                            ? 'bg-amber-100 text-amber-950 border border-amber-300'
+                            : 'bg-emerald-100 text-emerald-950 border border-emerald-300'
                         }`}
                       >
-                        {item.riskScore}/100
+                        {item.daysOfSafeStock} Days
                       </span>
-                      <StatusBadge status={item.urgency} />
-                    </div>
-                  </td>
+                      <div className="mt-1 text-[11px]">
+                        {item.deficitDays > 0 ? (
+                          <span className="text-rose-700 font-bold flex items-center justify-center gap-1">
+                            <AlertTriangle className="w-3 h-3 text-rose-600" />
+                            <span>-{item.deficitDays}d Deficit ({item.projectedDeficitUnits} {item.unit})</span>
+                          </span>
+                        ) : (
+                          <span className="text-emerald-700 font-medium">
+                            +{Math.abs(item.deficitDays).toFixed(1)}d Buffer Safe
+                          </span>
+                        )}
+                      </div>
+                    </td>
 
-                  {/* Actions (Connected to Medicine Intelligence & Orders & Logistics) */}
-                  <td className="px-3 py-3.5 text-right">
-                    <div className="flex flex-col items-end gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => handleCreateEmergencyIndent(item)}
-                        className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-[11px] font-bold flex items-center gap-1 shadow-2xs transition-colors cursor-pointer"
-                      >
-                        <Truck className="w-3 h-3" />
-                        <span>Draft Indent ({item.recommendedReorder})</span>
-                      </button>
-
-                      {item.linkedRedistId && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleApproveLateralTransfer(item.linkedRedistId!, item.shortName)
-                          }
-                          className="px-2.5 py-0.5 bg-blue-100 hover:bg-blue-200 text-blue-900 border border-blue-300 rounded text-[10px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                    {/* Risk Score & Status Badge */}
+                    <td className="px-3 py-3.5 text-center">
+                      <div className="flex flex-col items-center gap-1">
+                        <StatusBadge status={item.urgency} />
+                        <span
+                          className={`text-[10px] font-bold font-mono px-2 py-0.5 rounded ${
+                            item.riskScore >= 70
+                              ? 'bg-rose-100 text-rose-950'
+                              : item.riskScore >= 45
+                              ? 'bg-amber-100 text-amber-950'
+                              : 'bg-emerald-100 text-emerald-950'
+                          }`}
                         >
-                          <ArrowRightLeft className="w-2.5 h-2.5 text-blue-700" />
-                          <span>Request Lateral Transfer</span>
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                          Score: {item.riskScore}/100
+                        </span>
+                      </div>
+                    </td>
+
+                    {/* Actions (Connected to Review Modal, WhyThisAlertModal, Inventory & Transfers) */}
+                    <td className="px-3 py-3.5 text-right">
+                      <div className="flex flex-col items-end gap-1.5">
+                        <div className="text-[10px] font-mono font-bold text-emerald-900">
+                          Rec: +{item.recommendedReorder} {item.unit}
+                        </div>
+                        <div className="flex flex-wrap items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenCustomReorderModal(item)}
+                            className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-[10px] font-bold flex items-center gap-1 shadow-2xs transition-colors cursor-pointer"
+                          >
+                            <Truck className="w-3 h-3" />
+                            <span>Review Replenishment</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setWhyAlertModalData({
+                                title: `Surge Impact Assessment: ${item.shortName}`,
+                                medicineName: item.name,
+                                currentStock: item.currentStock,
+                                unit: item.unit,
+                                avgDailyConsumption: item.historicalBaseBurn,
+                                recentTrendPercent: surgePct,
+                                forecastDemand: item.projectedDailyBurn,
+                                nextReplenishmentDays: customLeadTime,
+                                safetyBufferDays: 3.0,
+                                projectedRisk:
+                                  item.urgency === 'CRITICAL'
+                                    ? 'CRITICAL'
+                                    : item.urgency === 'WARNING'
+                                    ? 'HIGH'
+                                    : 'MODERATE',
+                                reason: `${regionalProfile.seasonLabel} (${selectedPHC.district}): ${item.clinicalDriverNote} (Safety Stock: ${item.safetyStock} ${item.unit}, ROP: ${item.reorderPoint} ${item.unit}).`,
+                                onRemediate: () => handleOpenCustomReorderModal(item),
+                                onLateralTransfer: item.linkedRedistId
+                                  ? () =>
+                                      handleApproveLateralTransfer(
+                                        item.linkedRedistId!,
+                                        item.shortName
+                                      )
+                                  : undefined
+                              });
+                              setIsWhyModalOpen(true);
+                            }}
+                            className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 rounded text-[10px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                            title="Why this recommendation?"
+                          >
+                            <HelpCircle className="w-3 h-3 text-slate-600" />
+                            <span>Why?</span>
+                          </button>
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-end gap-1">
+                          {item.linkedRedistId && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleApproveLateralTransfer(item.linkedRedistId!, item.shortName)
+                              }
+                              className="px-2 py-0.5 bg-teal-50 hover:bg-teal-100 text-teal-900 border border-teal-300 rounded text-[10px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                            >
+                              <ArrowRightLeft className="w-2.5 h-2.5 text-teal-700" />
+                              <span>Review Transfer Rec</span>
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setActiveModule('medicine')}
+                            className="px-2 py-0.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded text-[10px] font-semibold cursor-pointer"
+                          >
+                            Inventory →
+                          </button>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

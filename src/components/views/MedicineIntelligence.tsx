@@ -17,7 +17,9 @@ import {
   X,
   ChevronRight,
   Activity,
-  Check
+  Check,
+  HelpCircle,
+  ShieldCheck
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -33,12 +35,17 @@ import {
 import { useApp } from '../../context/AppContext.tsx';
 import { StatusBadge } from '../ui/StatusBadge.tsx';
 import { OrderModal } from '../ui/OrderModal.tsx';
+import { WhyThisAlertModal, AlertMathBreakdown } from '../ui/WhyThisAlertModal.tsx';
 import { EmptyState } from '../ui/EmptyState.tsx';
 import { MedicineItem, RedistributionOpportunity } from '../../types.ts';
 import { PredictiveInventoryTrendChart } from './PredictiveInventoryTrendChart.tsx';
 import { resolveMedicineMatch } from '../../utils/medicineMatcher.ts';
 import { calculateMedicineForecast } from '../../utils/inventoryForecast.ts';
 import { matchesSearchKeywords } from '../../utils/globalSearch.ts';
+import {
+  getDatasetFacilityMetrics,
+  getCanonicalMedicineInventoryMetrics
+} from '../../utils/datasetMetrics.ts';
 
 interface ConsumptionLogEntry {
   id: string;
@@ -153,7 +160,16 @@ const INITIAL_CONSUMPTION_LOGS: Record<string, ConsumptionLogEntry[]> = {
 };
 
 export const MedicineIntelligence: React.FC = () => {
-  const { medicines, consumeMedicine, selectedPHC, redistributions, showNotification, approveRedistribution } = useApp();
+  const {
+    medicines,
+    consumeMedicine,
+    selectedPHC,
+    redistributions,
+    showNotification,
+    approveRedistribution,
+    rejectRedistribution,
+    requireAuthorizedAccess
+  } = useApp();
 
   // Search & Filter States
   const [searchTerm, setSearchTerm] = useState('');
@@ -218,30 +234,33 @@ export const MedicineIntelligence: React.FC = () => {
     return medicines.find((m) => m.id === selectedMedId) || medicines[0];
   }, [medicines, selectedMedId]);
 
+  // Canonical Single-Source-of-Truth Medicine & Facility Metrics
+  const datasetFacilityMetrics = useMemo(() => getDatasetFacilityMetrics(), []);
+  const canonicalMedMetrics = useMemo(
+    () => getCanonicalMedicineInventoryMetrics(medicines),
+    [medicines]
+  );
+
   // Critical & Warning Medicines for Quick Selector in 30-Day Line Chart
   const criticalAndWarningMeds = useMemo(() => {
-    const priorityMeds = medicines.filter(
-      (m) => m.stockoutRisk === 'CRITICAL' || m.stockoutRisk === 'WARNING' || m.currentStock <= m.minStockLevel * 1.2
-    );
+    const priorityMeds = canonicalMedMetrics.lowStockItems;
     return priorityMeds.length > 0 ? priorityMeds.slice(0, 6) : medicines.slice(0, 5);
-  }, [medicines]);
+  }, [canonicalMedMetrics.lowStockItems, medicines]);
 
-  // Quick Metric Counters
-  const criticalCount = useMemo(() => medicines.filter((m) => m.stockoutRisk === 'CRITICAL').length, [medicines]);
-  const surplusCount = useMemo(() => medicines.filter((m) => m.stockoutRisk === 'SURPLUS').length, [medicines]);
-  const expiringCount = useMemo(
-    () => medicines.filter((m) => m.fefoPriority === 'EXPIRING_SOON' || m.fefoPriority === 'URGENT').length,
-    [medicines]
-  );
-  const totalPipelineCount = useMemo(
-    () => medicines.reduce((acc, m) => acc + (m.pendingOrders > 0 ? 1 : 0), 0),
-    [medicines]
-  );
+  // Quick Metric Counters (Single Source of Truth matching Supply Overview, Sidebar & Alert Centre)
+  const criticalCount = canonicalMedMetrics.criticalCount;
+  const warningCount = canonicalMedMetrics.warningCount;
+  const lowStockCount = canonicalMedMetrics.lowStockCount;
+  const surplusCount = canonicalMedMetrics.surplusCount;
+  const expiringCount = canonicalMedMetrics.expiringSoonCount;
+  const totalPipelineCount = canonicalMedMetrics.inwardPipelineCount;
 
   // Filtered & Sorted Medicine List
   const filteredMeds = useMemo(() => {
     return medicines
       .filter((m) => {
+        const ev = canonicalMedMetrics.evaluationsByMedId[m.id];
+        const effectiveRisk = ev ? ev.riskLevel : m.stockoutRisk;
         const matchesSearch = matchesSearchKeywords(
           searchTerm,
           m.name,
@@ -249,15 +268,15 @@ export const MedicineIntelligence: React.FC = () => {
           m.batchNumber,
           m.sourceWarehouse,
           m.unit,
-          m.stockoutRisk,
+          effectiveRisk,
           m.fefoPriority
         );
 
         const matchesCategory = categoryFilter === 'ALL' || m.category === categoryFilter;
-        const matchesStatus = statusFilter === 'ALL' || m.stockoutRisk === statusFilter;
+        const matchesStatus = statusFilter === 'ALL' || effectiveRisk === statusFilter;
         const matchesExpiry =
           expiryFilter === 'ALL' ||
-          (expiryFilter === 'EXPIRING_SOON' && (m.fefoPriority === 'EXPIRING_SOON' || m.fefoPriority === 'URGENT')) ||
+          (expiryFilter === 'EXPIRING_SOON' && (m.fefoPriority === 'EXPIRING_SOON' || m.fefoPriority === 'URGENT' || (ev && ev.expiredBatchStock > 0))) ||
           (expiryFilter === 'STABLE' && m.fefoPriority === 'NORMAL');
 
         return matchesSearch && matchesCategory && matchesStatus && matchesExpiry;
@@ -269,7 +288,7 @@ export const MedicineIntelligence: React.FC = () => {
         if (sortField === 'expiry') return new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime();
         return a.name.localeCompare(b.name);
       });
-  }, [medicines, searchTerm, categoryFilter, statusFilter, expiryFilter, sortField]);
+  }, [medicines, canonicalMedMetrics.evaluationsByMedId, searchTerm, categoryFilter, statusFilter, expiryFilter, sortField]);
 
   // 30-Day Historical Consumption Trends & Projected Demand Dataset for Recharts LineChart
   const thirtyDayConsumptionAndDemandData = useMemo(() => {
@@ -467,14 +486,94 @@ export const MedicineIntelligence: React.FC = () => {
             reason: `Reorder requisition for ${med.name} based on dynamic lead-time stockout projection.`
           };
 
-    setOrderModalData({
-      medicineName: med.name,
-      quantity: rec.qty,
-      priority: rec.urgency,
-      justification: rec.reason
-    });
-    setIsOrderModalOpen(true);
+    requireAuthorizedAccess(() => {
+      setOrderModalData({
+        medicineName: med.name,
+        quantity: rec.qty,
+        priority: rec.urgency,
+        justification: rec.reason
+      });
+      setIsOrderModalOpen(true);
+    }, `Create replenishment order for ${med.name}`);
   };
+
+  // "Why this recommendation?" Modal State (Reusing existing WhyThisAlertModal)
+  const [whyModalData, setWhyModalData] = useState<AlertMathBreakdown | null>(null);
+  const [isWhyModalOpen, setIsWhyModalOpen] = useState(false);
+
+  const handleOpenWhyModal = (med: MedicineItem) => {
+    const fc = calculateMedicineForecast({
+      medicine: med,
+      phcName: selectedPHC.name,
+      leadTimeDays: 3.5,
+      safetyBufferDays: 3.0,
+      replenishmentCycleDays: 14,
+      consumptionPeriodDays: 30,
+      isSyntheticData: true
+    });
+    const matchedRec = redistributions.find(
+      (r) => resolveMedicineMatch([med], r.medicineName).status === 'MATCHED'
+    );
+    setWhyModalData({
+      title: `Inventory & FEFO Assessment: ${med.name}`,
+      medicineName: med.name,
+      currentStock: fc.usableStock,
+      unit: med.unit,
+      avgDailyConsumption: fc.recentAvgDailyConsumption ?? med.dailyConsumption,
+      recentTrendPercent:
+        med.stockoutRisk === 'CRITICAL' ? 22 : med.stockoutRisk === 'WARNING' ? 14 : 5,
+      forecastDemand: fc.effectiveDailyDemand ?? med.dailyConsumption,
+      nextReplenishmentDays: fc.leadTimeDays,
+      safetyBufferDays: fc.safetyBufferDays,
+      projectedRisk:
+        fc.riskLevel === 'CRITICAL'
+          ? 'CRITICAL'
+          : fc.riskLevel === 'WARNING'
+          ? 'WARNING'
+          : 'LOW',
+      reason: `${fc.primaryRiskReason} (Deterministic usable stock: ${fc.usableStock} ${med.unit}, Safety stock: ${fc.safetyStock} ${med.unit}, Reorder point: ${fc.reorderPoint} ${med.unit}).`,
+      onRemediate: () => handleOpenReorderModal(med),
+      onLateralTransfer:
+        matchedRec && (matchedRec.status === 'PENDING_REVIEW' || matchedRec.status === 'PROPOSED')
+          ? () => approveRedistribution(matchedRec.id)
+          : undefined
+    });
+    setIsWhyModalOpen(true);
+  };
+
+  // Ordered FEFO batches for the selected medicine (earliest usable expiry first, expired last)
+  const orderedSelectedBatches = useMemo(() => {
+    const usable = selectedForecast.batchesBreakdown
+      .filter((b) => !b.isExpired && b.quantity > 0)
+      .sort((a, b) => a.expiryDate.localeCompare(b.expiryDate));
+    const zeroUsable = selectedForecast.batchesBreakdown.filter(
+      (b) => !b.isExpired && b.quantity <= 0
+    );
+    const expired = selectedForecast.batchesBreakdown
+      .filter((b) => b.isExpired)
+      .sort((a, b) => a.expiryDate.localeCompare(b.expiryDate));
+
+    return [
+      ...usable.map((b, idx) => ({
+        ...b,
+        fefoRank: idx + 1,
+        fefoDirective:
+          idx === 0
+            ? 'FEFO #1 — DISPENSE FIRST'
+            : `FEFO #${idx + 1} — CONSUME AFTER #${idx}`
+      })),
+      ...zeroUsable.map((b) => ({
+        ...b,
+        fefoRank: null as number | null,
+        fefoDirective: 'DEPLETED (0 Units)'
+      })),
+      ...expired.map((b) => ({
+        ...b,
+        fefoRank: null as number | null,
+        fefoDirective: 'EXPIRED — EXCLUDED FROM USABLE STOCK'
+      }))
+    ];
+  }, [selectedForecast.batchesBreakdown]);
 
   // Calculate days until expiry
   const getDaysUntilExpiry = (expiryDateStr: string) => {
@@ -491,9 +590,9 @@ export const MedicineIntelligence: React.FC = () => {
       {/* 1. Header & Title Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100/90 px-2.5 py-0.5 rounded font-mono uppercase tracking-wider">
-              Medicine Inventory &amp; FEFO
+              Medicine Inventory &amp; FEFO ({canonicalMedMetrics.totalTrackedItems} Facility Items · {datasetFacilityMetrics.nlemCatalogueCount} NLEM Reference)
             </span>
             <span className="text-xs text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded font-mono">
               Synthetic / Demo PHC Inventory • Local SQLite + Offline Sync
@@ -501,10 +600,10 @@ export const MedicineIntelligence: React.FC = () => {
           </div>
           <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight mt-1 flex items-center gap-2">
             <Pill className="w-5 h-5 text-emerald-600" />
-            <span>Medicine Inventory, Stock Adjustment &amp; FEFO Defense</span>
+            <span>Medicine Inventory, Stock Adjustment &amp; FEFO Defense ({canonicalMedMetrics.totalTrackedItems} Tracked)</span>
           </h1>
           <p className="text-xs text-slate-600 mt-0.5">
-            Live stock adjustments, 30-day synthetic consumption velocity, lead-time stock-out risk, FEFO batch expiry defense, and replenishment for <strong>{selectedPHC.name}</strong>.
+            Tracking <strong>{canonicalMedMetrics.totalTrackedItems} active facility inventory items</strong> for <strong>{selectedPHC.name}</strong> (out of {datasetFacilityMetrics.nlemCatalogueCount} NLEM 2022 reference drugs) — {criticalCount} Critical, {warningCount} Warning ({lowStockCount} Low Total), {canonicalMedMetrics.normalCount} Normal, and {surplusCount} Surplus.
           </p>
         </div>
 
@@ -567,14 +666,14 @@ export const MedicineIntelligence: React.FC = () => {
                 <span>Stockout Vulnerability</span>
               </span>
               <span className="text-xs font-bold font-mono px-2 py-0.5 rounded bg-rose-200 text-rose-950">
-                {criticalCount} Critical
+                {criticalCount} Critical · {warningCount} Warning
               </span>
             </div>
             <div className="text-2xl font-bold font-mono text-rose-950 mt-2">
-              {criticalCount} Item{criticalCount === 1 ? '' : 's'}
+              {criticalCount} Critical ({lowStockCount} Low Total)
             </div>
             <p className="text-xs text-rose-900 mt-1 font-medium leading-relaxed">
-              Depletion projected within <strong>4 days</strong>; below warehouse delivery lead time window.
+              {criticalCount} Critical (&le;50% Min or &lt;3.5d lead time) + {warningCount} Warning (&le;Min or Dynamic ROP).
             </p>
           </div>
           <div className="mt-3 pt-2 border-t border-rose-200 text-[11px] text-rose-800 font-bold flex items-center justify-between">
@@ -1111,20 +1210,65 @@ export const MedicineIntelligence: React.FC = () => {
                 <table className="w-full text-left text-xs" role="table">
                   <thead className="bg-slate-100/80 border-b border-slate-200 text-slate-700 font-bold uppercase text-[10px] tracking-wider">
                     <tr>
-                      <th scope="col" className="px-4 py-3">Medicine & Formulation</th>
-                      <th scope="col" className="px-3 py-3">Batch & Expiry</th>
-                      <th scope="col" className="px-3 py-3 text-right">Physical Stock</th>
-                      <th scope="col" className="px-3 py-3 text-right">Burn Rate</th>
-                      <th scope="col" className="px-3 py-3 text-center">Stockout Window</th>
-                      <th scope="col" className="px-3 py-3 text-center">Risk Status</th>
-                      <th scope="col" className="px-3 py-3 text-right">Actions</th>
+                      <th scope="col" className="px-4 py-3">Medicine &amp; Recommendation</th>
+                      <th scope="col" className="px-3 py-3">FEFO Batch &amp; Expiry</th>
+                      <th scope="col" className="px-3 py-3 text-right">Usable vs Min/Safety</th>
+                      <th scope="col" className="px-3 py-3 text-right">Burn &amp; Trend</th>
+                      <th scope="col" className="px-3 py-3 text-center">Days of Stock</th>
+                      <th scope="col" className="px-3 py-3 text-center">Operational Status</th>
+                      <th scope="col" className="px-3 py-3 text-right">Direct Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {filteredMeds.map((med) => {
                       const isSelected = selectedMed?.id === med.id;
-                      const daysUntilExp = getDaysUntilExpiry(med.expiryDate);
-                      const stockPercent = Math.min(100, Math.round((med.currentStock / med.maxStockLevel) * 100));
+                      const evalRes = canonicalMedMetrics.evaluationsByMedId[med.id];
+                      const usableStockVal = evalRes ? evalRes.usableStock : med.currentStock;
+                      const expiredStockVal = evalRes ? evalRes.expiredBatchStock : 0;
+                      const daysOfStockVal = evalRes ? evalRes.usableDaysOfCover : med.projectedStockoutDays;
+                      const effectiveRisk = evalRes ? evalRes.riskLevel : med.stockoutRisk;
+                      const suggestedOrderQty = evalRes ? evalRes.recommendedOrderQty : 0;
+
+                      // Determine earliest usable FEFO batch for row display
+                      const refMs = Date.parse('2026-09-22T00:00:00Z');
+                      const usableBatchesSorted =
+                        Array.isArray(med.batches) && med.batches.length > 0
+                          ? [...med.batches]
+                              .filter(
+                                (b) =>
+                                  b.quantity > 0 &&
+                                  b.status !== 'EXPIRED' &&
+                                  Date.parse(`${b.expiryDate}T00:00:00Z`) >= refMs
+                              )
+                              .sort((a, b) => a.expiryDate.localeCompare(b.expiryDate))
+                          : [];
+                      const primaryFefoBatch = usableBatchesSorted[0];
+                      const displayBatchNo = primaryFefoBatch?.batchNumber || med.batchNumber;
+                      const displayExpDate = primaryFefoBatch?.expiryDate || med.expiryDate;
+                      const daysUntilExp = getDaysUntilExpiry(displayExpDate);
+                      const totalBatchesCount = Array.isArray(med.batches) ? med.batches.length : 1;
+
+                      const hasExpiryRisk =
+                        med.fefoPriority === 'URGENT' ||
+                        med.fefoPriority === 'EXPIRING_SOON' ||
+                        daysUntilExp <= 90 ||
+                        expiredStockVal > 0;
+
+                      const operationalStatusLabel =
+                        effectiveRisk === 'CRITICAL'
+                          ? 'CRITICAL'
+                          : effectiveRisk === 'WARNING'
+                          ? 'LOW'
+                          : 'HEALTHY';
+
+                      const matchedRowRedist = redistributions.find(
+                        (r) => resolveMedicineMatch([med], r.medicineName).status === 'MATCHED'
+                      );
+
+                      const stockPercent = Math.min(
+                        100,
+                        Math.round((usableStockVal / Math.max(1, med.maxStockLevel)) * 100)
+                      );
 
                       return (
                         <tr
@@ -1138,43 +1282,74 @@ export const MedicineIntelligence: React.FC = () => {
                         >
                           <td className="px-4 py-3">
                             <div className="font-bold text-slate-900">{med.name}</div>
-                            <div className="text-[11px] text-slate-500 font-medium flex items-center gap-1.5 mt-0.5">
+                            <div className="text-[11px] text-slate-500 font-medium flex flex-wrap items-center gap-1.5 mt-0.5">
                               <span className="px-1.5 py-0.2 rounded bg-slate-100 text-slate-700 font-mono text-[10px]">
                                 {med.unit}
                               </span>
                               <span>{med.category}</span>
-                            </div>
-                          </td>
-
-                          <td className="px-3 py-3 font-mono text-[11px]">
-                            <div className="text-slate-800 font-bold">{med.batchNumber}</div>
-                            <div
-                              className={`text-[10px] font-semibold mt-0.5 flex items-center gap-1 ${
-                                daysUntilExp <= 90 ? 'text-amber-800 font-bold' : 'text-slate-500'
-                              }`}
-                            >
-                              <span>Exp: {med.expiryDate}</span>
-                              {daysUntilExp <= 90 && (
-                                <span className="px-1 py-0.2 rounded bg-amber-100 text-amber-900 text-[9px]">
-                                  {daysUntilExp}d
+                              {suggestedOrderQty > 0 && (effectiveRisk === 'CRITICAL' || effectiveRisk === 'WARNING') && (
+                                <span className="px-1.5 py-0.2 rounded bg-rose-50 text-rose-800 border border-rose-200 font-mono text-[10px] font-bold">
+                                  Rec Indent: +{suggestedOrderQty}
+                                </span>
+                              )}
+                              {matchedRowRedist && (
+                                <span className="px-1.5 py-0.2 rounded bg-teal-50 text-teal-800 border border-teal-200 font-mono text-[10px] font-bold">
+                                  Transfer: {matchedRowRedist.recommendedTransferQuantity || matchedRowRedist.transferQuantity} ({matchedRowRedist.status})
                                 </span>
                               )}
                             </div>
                           </td>
 
+                          <td className="px-3 py-3 font-mono text-[11px]">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-slate-900 font-bold">{displayBatchNo}</span>
+                              <span className="px-1.5 py-0.2 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 text-[9px] font-bold">
+                                FEFO #1
+                              </span>
+                              {totalBatchesCount > 1 && (
+                                <span className="text-[9px] text-slate-500">
+                                  ({totalBatchesCount} batches)
+                                </span>
+                              )}
+                            </div>
+                            <div
+                              className={`text-[10px] font-semibold mt-0.5 flex flex-wrap items-center gap-1 ${
+                                daysUntilExp <= 90 ? 'text-amber-800 font-bold' : 'text-slate-500'
+                              }`}
+                            >
+                              <span>Exp: {displayExpDate}</span>
+                              <span
+                                className={`px-1 py-0.2 rounded text-[9px] ${
+                                  daysUntilExp <= 45
+                                    ? 'bg-rose-100 text-rose-900 font-bold'
+                                    : daysUntilExp <= 90
+                                    ? 'bg-amber-100 text-amber-900 font-bold'
+                                    : 'bg-slate-100 text-slate-600'
+                                }`}
+                              >
+                                {daysUntilExp}d • FEFO: {med.fefoPriority}
+                              </span>
+                            </div>
+                          </td>
+
                           <td className="px-3 py-3 text-right font-mono">
                             <div className="font-bold text-slate-900 text-sm">
-                              {med.currentStock.toLocaleString()}
+                              {usableStockVal.toLocaleString()} <span className="text-[10px] font-normal text-slate-500">usable</span>
                             </div>
                             <div className="text-[10px] text-slate-500 font-sans">
-                              Min Buffer: {med.minStockLevel}
+                              Min/Safety: <strong className="text-slate-700">{med.minStockLevel}</strong>
+                              {expiredStockVal > 0 && (
+                                <span className="text-rose-700 font-bold ml-1">
+                                  (-{expiredStockVal} exp excl.)
+                                </span>
+                              )}
                             </div>
                             <div className="w-16 h-1.5 bg-slate-200 rounded-full ml-auto mt-1 overflow-hidden">
                               <div
                                 className={`h-full rounded-full ${
-                                  med.currentStock <= med.minStockLevel
+                                  usableStockVal <= med.minStockLevel
                                     ? 'bg-rose-500'
-                                    : med.currentStock >= med.maxStockLevel * 0.9
+                                    : usableStockVal >= med.maxStockLevel * 0.9
                                     ? 'bg-sky-500'
                                     : 'bg-emerald-500'
                                 }`}
@@ -1185,31 +1360,124 @@ export const MedicineIntelligence: React.FC = () => {
 
                           <td className="px-3 py-3 text-right font-mono">
                             <div className="font-bold text-slate-800">{med.dailyConsumption}/day</div>
-                            <div className="text-[10px] text-slate-500 font-sans">{med.weeklyConsumption}/wk</div>
+                            <div className="text-[10px] text-slate-500 font-sans">
+                              {med.weeklyConsumption}/wk •{' '}
+                              <span
+                                className={
+                                  daysOfStockVal <= 5
+                                    ? 'text-rose-700 font-bold'
+                                    : daysOfStockVal <= 10
+                                    ? 'text-amber-700 font-semibold'
+                                    : 'text-emerald-700'
+                                }
+                              >
+                                {daysOfStockVal <= 5
+                                  ? 'Rapid Depletion'
+                                  : daysOfStockVal <= 10
+                                  ? 'Watch Buffer'
+                                  : 'Steady'}
+                              </span>
+                            </div>
                           </td>
 
                           <td className="px-3 py-3 text-center font-mono">
                             <span
                               className={`font-bold text-xs px-2.5 py-0.5 rounded-full inline-block ${
-                                med.projectedStockoutDays <= 4
+                                daysOfStockVal <= 4
                                   ? 'bg-rose-100 text-rose-950 border border-rose-300'
-                                  : med.projectedStockoutDays <= 8
+                                  : daysOfStockVal <= 8
                                   ? 'bg-amber-100 text-amber-950 border border-amber-300'
-                                  : med.projectedStockoutDays >= 60
+                                  : daysOfStockVal >= 60
                                   ? 'bg-sky-100 text-sky-950 border border-sky-300'
                                   : 'bg-emerald-100 text-emerald-950 border border-emerald-300'
                               }`}
                             >
-                              {med.projectedStockoutDays} Days
+                              {daysOfStockVal} Days
                             </span>
                           </td>
 
                           <td className="px-3 py-3 text-center">
-                            <StatusBadge status={med.stockoutRisk} />
+                            <div className="flex flex-col items-center gap-1">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
+                                  operationalStatusLabel === 'CRITICAL'
+                                    ? 'bg-rose-100 text-rose-950 border-rose-300'
+                                    : operationalStatusLabel === 'LOW'
+                                    ? 'bg-amber-100 text-amber-950 border-amber-300'
+                                    : 'bg-emerald-100 text-emerald-950 border-emerald-300'
+                                }`}
+                              >
+                                {operationalStatusLabel}
+                              </span>
+                              {hasExpiryRisk && (
+                                <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                                  EXPIRY RISK
+                                </span>
+                              )}
+                            </div>
                           </td>
 
                           <td className="px-3 py-3 text-right">
-                            <div className="flex items-center justify-end gap-1.5">
+                            <div className="flex flex-wrap items-center justify-end gap-1">
+                              {matchedRowRedist &&
+                              (matchedRowRedist.status === 'PENDING_REVIEW' ||
+                                matchedRowRedist.status === 'PROPOSED') ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedMedId(med.id);
+                                    approveRedistribution(matchedRowRedist.id);
+                                  }}
+                                  title="Review pending lateral transfer recommendation (Requires Medical Officer approval)"
+                                  className="px-2 py-1 text-[10px] font-bold bg-teal-700 hover:bg-teal-800 text-white rounded-md transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1"
+                                >
+                                  <ShieldCheck className="w-3 h-3" />
+                                  <span>Review Transfer</span>
+                                </button>
+                              ) : effectiveRisk === 'SURPLUS' ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedMedId(med.id);
+                                    setActiveTab('surplus');
+                                  }}
+                                  title="Review surplus stock for lateral transfer"
+                                  className="px-2 py-1 text-[10px] font-bold bg-sky-700 hover:bg-sky-800 text-white rounded-md transition-colors cursor-pointer whitespace-nowrap"
+                                >
+                                  Review Surplus
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedMedId(med.id);
+                                    setActiveTab('reorder');
+                                    handleOpenReorderModal(med);
+                                  }}
+                                  title="Review replenishment order"
+                                  className="px-2 py-1 text-[10px] font-bold bg-emerald-700 hover:bg-emerald-800 text-white rounded-md transition-colors cursor-pointer whitespace-nowrap"
+                                >
+                                  {operationalStatusLabel === 'HEALTHY' ? '+ Order' : 'Review Replenish'}
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedMedId(med.id);
+                                  handleOpenWhyModal(med);
+                                }}
+                                title="Why this recommendation?"
+                                className="px-1.5 py-1 text-[10px] font-bold border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 rounded-md transition-colors cursor-pointer whitespace-nowrap flex items-center gap-0.5"
+                              >
+                                <HelpCircle className="w-3 h-3 text-slate-500" />
+                                <span>Why?</span>
+                              </button>
+
                               <button
                                 type="button"
                                 onClick={async (e) => {
@@ -1221,35 +1489,10 @@ export const MedicineIntelligence: React.FC = () => {
                                     showNotification(`Dispensed ${qty} ${med.unit} of ${med.name}.`);
                                   }
                                 }}
-                                title="Quick Dispense 10 units"
-                                className="px-2 py-1 text-[11px] font-semibold border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 rounded-md transition-colors cursor-pointer whitespace-nowrap"
+                                title="Quick Dispense 10 units (FEFO earliest batch)"
+                                className="px-2 py-1 text-[10px] font-semibold border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 rounded-md transition-colors cursor-pointer whitespace-nowrap"
                               >
                                 -10 Use
-                              </button>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSelectedMedId(med.id);
-                                  setActiveTab('reorder');
-                                  handleOpenReorderModal(med);
-                                }}
-                                title="Order Replacement Stock"
-                                className="px-2 py-1 text-[11px] font-semibold bg-emerald-700 hover:bg-emerald-800 text-white rounded-md transition-colors cursor-pointer whitespace-nowrap"
-                              >
-                                + Order
-                              </button>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSelectedMedId(med.id);
-                                  setActiveTab('forecast');
-                                }}
-                                title="Inspect 30-Day Consumption & Demand Line Chart"
-                                className="p-1.5 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
-                              >
-                                <TrendingUp className="w-3.5 h-3.5" />
                               </button>
                             </div>
                           </td>
@@ -1423,7 +1666,7 @@ export const MedicineIntelligence: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Short Explanation of Main Risk Reason */}
+                {/* Short Explanation of Main Risk Reason + "Why this recommendation?" */}
                 <div className={`p-3.5 rounded-xl border text-xs ${
                   selectedForecast.riskLevel === 'CRITICAL'
                     ? 'bg-rose-50/80 border-rose-200 text-rose-950'
@@ -1431,42 +1674,151 @@ export const MedicineIntelligence: React.FC = () => {
                     ? 'bg-amber-50/80 border-amber-200 text-amber-950'
                     : 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
                 }`}>
-                  <div className="font-bold uppercase text-[10px] font-mono mb-1">
-                    Primary Risk Explanation ({selectedForecast.riskLevel})
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                    <span className="font-bold uppercase text-[10px] font-mono">
+                      Operational Status:{' '}
+                      {selectedForecast.riskLevel === 'CRITICAL'
+                        ? 'CRITICAL'
+                        : selectedForecast.riskLevel === 'WARNING'
+                        ? 'LOW'
+                        : 'HEALTHY'}
+                      {(selectedMed.fefoPriority === 'URGENT' ||
+                        selectedMed.fefoPriority === 'EXPIRING_SOON' ||
+                        getDaysUntilExpiry(selectedMed.expiryDate) <= 90 ||
+                        selectedForecast.expiredBatchStock > 0)
+                        ? ' • EXPIRY RISK'
+                        : ''}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenWhyModal(selectedMed)}
+                      className="px-2 py-0.5 rounded bg-white/90 hover:bg-white text-slate-800 border border-slate-300 font-bold text-[10px] flex items-center gap-1 cursor-pointer"
+                    >
+                      <HelpCircle className="w-3 h-3 text-slate-600" />
+                      <span>Why this recommendation?</span>
+                    </button>
                   </div>
                   <p className="leading-relaxed font-medium">{selectedForecast.primaryRiskReason}</p>
+                  <div className="mt-2 pt-2 border-t border-current/15 flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-mono text-[11px]">
+                      Replenishment Rec: <strong>+{selectedForecast.suggestedReplenishmentQty} {selectedMed.unit}</strong>
+                      {matchedRedistribution
+                        ? ` • Transfer Rec: ${matchedRedistribution.recommendedTransferQuantity || matchedRedistribution.transferQuantity} ${selectedMed.unit} (${matchedRedistribution.status})`
+                        : ''}
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {matchedRedistribution &&
+                        (matchedRedistribution.status === 'PENDING_REVIEW' ||
+                          matchedRedistribution.status === 'PROPOSED') && (
+                          <button
+                            type="button"
+                            onClick={() => approveRedistribution(matchedRedistribution.id)}
+                            className="px-2.5 py-1 rounded bg-teal-700 hover:bg-teal-800 text-white font-bold text-[11px] flex items-center gap-1 cursor-pointer"
+                          >
+                            <ShieldCheck className="w-3 h-3" />
+                            <span>Review Transfer</span>
+                          </button>
+                        )}
+                      <button
+                        type="button"
+                        onClick={() => handleOpenReorderModal(selectedMed)}
+                        className="px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 text-white font-bold text-[11px] cursor-pointer"
+                      >
+                        Review Replenishment
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
-                {/* Batch Breakdown (showing Usable vs Expired batches) */}
-                {selectedForecast.batchesBreakdown.length > 0 && (
-                  <div className="p-3.5 rounded-xl border border-slate-200 bg-white space-y-2 text-xs">
-                    <div className="flex items-center justify-between font-bold text-slate-800">
-                      <span>Batch Shelf-Life &amp; Usable Stock Breakdown</span>
-                      <span className="font-mono text-[10px] text-slate-500">
+                {/* Part 2: FEFO Batch Visibility Table (Earliest Expiry First, Usable vs Expired) */}
+                {orderedSelectedBatches.length > 0 && (
+                  <div className="p-3.5 rounded-xl border border-slate-200 bg-white space-y-2.5 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <span className="font-bold text-slate-900 block">
+                          FEFO Batch Visibility &amp; Dispensing Sequence
+                        </span>
+                        <span className="text-[11px] text-slate-500">
+                          Ordered by earliest expiry first; expired batches are strictly excluded from usable stock.
+                        </span>
+                      </div>
+                      <span className="font-mono text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700">
                         Total: {selectedForecast.totalPhysicalStock} • Usable: {selectedForecast.usableStock} • Expired: {selectedForecast.expiredBatchStock}
                       </span>
                     </div>
-                    <div className="divide-y divide-slate-100">
-                      {selectedForecast.batchesBreakdown.map((b) => (
-                        <div key={b.batchNumber} className="py-1.5 flex items-center justify-between font-mono text-[11px]">
-                          <div>
-                            <span className="font-bold text-slate-900">{b.batchNumber}</span>
-                            <span className="text-slate-500 ml-2">Exp: {b.expiryDate}</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-slate-800">{b.quantity} {selectedMed.unit}</span>
-                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                              b.isExpired
-                                ? 'bg-rose-100 text-rose-900 border border-rose-300'
-                                : b.daysToExpiry !== null && b.daysToExpiry <= 90
-                                ? 'bg-amber-100 text-amber-900 border border-amber-300'
-                                : 'bg-emerald-100 text-emerald-900'
-                            }`}>
-                              {b.isExpired ? 'EXPIRED (Excluded)' : b.daysToExpiry !== null && b.daysToExpiry <= 90 ? `FEFO (${b.daysToExpiry}d)` : 'USABLE'}
-                            </span>
-                          </div>
-                        </div>
-                      ))}
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-[11px] border border-slate-200 rounded-lg overflow-hidden">
+                        <thead className="bg-slate-50 border-b border-slate-200 font-mono text-[10px] uppercase text-slate-600">
+                          <tr>
+                            <th className="px-2.5 py-1.5">FEFO Order</th>
+                            <th className="px-2.5 py-1.5">Batch #</th>
+                            <th className="px-2.5 py-1.5 text-right">Qty</th>
+                            <th className="px-2.5 py-1.5">Expiry Date</th>
+                            <th className="px-2.5 py-1.5">Usability &amp; Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 font-mono">
+                          {orderedSelectedBatches.map((b) => (
+                            <tr
+                              key={b.batchNumber}
+                              className={
+                                b.isExpired
+                                  ? 'bg-rose-50/60 text-rose-900'
+                                  : b.fefoRank === 1
+                                  ? 'bg-emerald-50/50 text-slate-900'
+                                  : 'bg-white text-slate-800'
+                              }
+                            >
+                              <td className="px-2.5 py-2 font-bold">
+                                {b.isExpired ? (
+                                  <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-900 border border-rose-300 text-[9px]">
+                                    DO NOT USE
+                                  </span>
+                                ) : b.fefoRank === 1 ? (
+                                  <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-900 border border-emerald-300 text-[9px]">
+                                    #1 FIRST OUT
+                                  </span>
+                                ) : (
+                                  <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-300 text-[9px]">
+                                    #{b.fefoRank} QUEUED
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-2.5 py-2 font-bold">{b.batchNumber}</td>
+                              <td className="px-2.5 py-2 text-right font-bold">
+                                {b.quantity} {selectedMed.unit}
+                              </td>
+                              <td className="px-2.5 py-2">
+                                <div>{b.expiryDate}</div>
+                                <div className="text-[10px] text-slate-500">
+                                  {b.daysToExpiry !== null
+                                    ? b.daysToExpiry < 0
+                                      ? `${Math.abs(b.daysToExpiry)}d past expiry`
+                                      : `${b.daysToExpiry}d left`
+                                    : 'Unknown'}
+                                </div>
+                              </td>
+                              <td className="px-2.5 py-2 font-sans text-[10px]">
+                                <span
+                                  className={`inline-block font-mono font-bold px-1.5 py-0.5 rounded ${
+                                    b.isExpired
+                                      ? 'bg-rose-100 text-rose-900 border border-rose-300'
+                                      : b.daysToExpiry !== null && b.daysToExpiry <= 90
+                                      ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                                      : 'bg-emerald-100 text-emerald-900'
+                                  }`}
+                                >
+                                  {b.isExpired ? 'EXPIRED (Excluded)' : 'USABLE'}
+                                </span>
+                                <div className="text-slate-600 mt-0.5 font-medium">
+                                  {b.fefoDirective}
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                   </div>
                 )}
@@ -1867,23 +2219,73 @@ export const MedicineIntelligence: React.FC = () => {
                     </div>
 
                     {matchedRedistribution.status === 'APPROVED' ||
+                    matchedRedistribution.status === 'DISPATCHED' ||
                     matchedRedistribution.status === 'IN_TRANSIT' ||
+                    matchedRedistribution.status === 'RECEIVED' ||
                     matchedRedistribution.status === 'COMPLETED' ? (
-                      <div className="w-full py-2 px-3 bg-emerald-100 text-emerald-900 border border-emerald-300 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-700" />
-                        <span>Transfer Approved &amp; Applied ({matchedRedistribution.status})</span>
+                      <div className="space-y-1">
+                        <div className="w-full py-2 px-3 bg-emerald-100 text-emerald-900 border border-emerald-300 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-700" />
+                          <span>Transfer Approved &amp; Applied ({matchedRedistribution.status})</span>
+                        </div>
+                        {(matchedRedistribution.reviewedBy || matchedRedistribution.approvedBy) && (
+                          <div className="text-[11px] font-mono text-slate-600 text-center">
+                            Approved by {matchedRedistribution.reviewedBy || matchedRedistribution.approvedBy}
+                            {matchedRedistribution.approvedAt
+                              ? ` • ${new Date(matchedRedistribution.approvedAt).toLocaleString()}`
+                              : ''}
+                          </div>
+                        )}
+                      </div>
+                    ) : matchedRedistribution.status === 'REJECTED' ||
+                      matchedRedistribution.status === 'CANCELLED' ? (
+                      <div className="space-y-1">
+                        <div className="w-full py-2 px-3 bg-rose-100 text-rose-900 border border-rose-300 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5">
+                          <span>Recommendation {matchedRedistribution.status} (No Stock Transferred)</span>
+                        </div>
+                        {(matchedRedistribution.reviewedBy || matchedRedistribution.rejectedBy) && (
+                          <div className="text-[11px] font-mono text-slate-600 text-center">
+                            Rejected by {matchedRedistribution.reviewedBy || matchedRedistribution.rejectedBy}
+                            {matchedRedistribution.rejectedAt
+                              ? ` • ${new Date(matchedRedistribution.rejectedAt).toLocaleString()}`
+                              : ''}
+                          </div>
+                        )}
                       </div>
                     ) : (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          approveRedistribution(matchedRedistribution.id);
-                        }}
-                        className="w-full py-2 bg-sky-700 hover:bg-sky-800 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-2xs flex items-center justify-center gap-1.5"
-                      >
-                        <ArrowRightLeft className="w-3.5 h-3.5" />
-                        <span>Authorize Inter-PHC Lateral Transfer</span>
-                      </button>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            approveRedistribution(matchedRedistribution.id);
+                          }}
+                          className="flex-1 py-2 px-3 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-2xs flex items-center justify-center gap-1.5"
+                        >
+                          <ArrowRightLeft className="w-3.5 h-3.5" />
+                          <span>Review Recommendation</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            approveRedistribution(matchedRedistribution.id, undefined, true);
+                          }}
+                          className="py-2 px-3 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            rejectRedistribution(
+                              matchedRedistribution.id,
+                              'Rejected by Medical Officer during clinical review'
+                            );
+                          }}
+                          className="py-2 px-3 bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-300 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                        >
+                          Reject
+                        </button>
+                      </div>
                     )}
                   </div>
                 ) : (
@@ -1924,6 +2326,13 @@ export const MedicineIntelligence: React.FC = () => {
         defaultQuantity={orderModalData.quantity}
         defaultPriority={orderModalData.priority}
         defaultJustification={orderModalData.justification}
+      />
+
+      {/* 5. "Why this recommendation?" Explainability Modal */}
+      <WhyThisAlertModal
+        isOpen={isWhyModalOpen}
+        onClose={() => setIsWhyModalOpen(false)}
+        data={whyModalData}
       />
     </div>
   );

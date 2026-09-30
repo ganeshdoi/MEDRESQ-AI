@@ -48,6 +48,7 @@ export interface MedicineItem {
   reservedStock?: number;
   expectedDeliveryDate?: string;
   sourceWarehouse: string;
+  warehouseSource?: string;
   // Deterministic forecast fields
   projectedStockoutDays: number;
   stockoutRisk: 'CRITICAL' | 'WARNING' | 'NORMAL' | 'SURPLUS';
@@ -145,19 +146,46 @@ export interface CapacityRecord {
   }[];
 }
 
+export type AttendanceStatus = 'PRESENT' | 'ABSENT' | 'ON_LEAVE' | 'NOT_MARKED';
+export type AttendanceSyncStatus = 'SYNCED' | 'QUEUED' | 'SYNCING' | 'FAILED';
+
+export interface StaffAttendanceRecord {
+  attendanceId: string;
+  staffId: string;
+  staffName: string;
+  designation: string;
+  department?: string;
+  phcId: string;
+  phcName: string;
+  date: string; // YYYY-MM-DD
+  status: AttendanceStatus;
+  previousStatus?: AttendanceStatus;
+  markedBy: string;
+  markedByOfficerId?: string;
+  markedAt: string;
+  syncStatus: AttendanceSyncStatus;
+}
+
 export interface StaffMember {
   id: string;
+  staffCode?: string;
   phcId: string;
+  phcName?: string;
   name: string;
-  role: 'Medical Officer' | 'Staff Nurse' | 'Pharmacist' | 'Lab Technician' | 'ANM / Health Worker' | 'Data Entry Operator' | string;
+  role: 'Medical Officer' | 'Staff Nurse' | 'Pharmacist' | 'Lab Technician' | 'ANM / Health Worker' | 'ANM' | 'CHO' | 'Data Entry Operator' | 'Other' | string;
+  designation?: string;
+  department?: string;
   qualification: string;
   assignedArea: string;
   shift: 'Morning' | 'Evening' | 'Night' | 'On Call';
-  status: 'PRESENT' | 'FIELD_DUTY' | 'ON_LEAVE' | 'DEPLETED' | string;
-  attendanceStatus?: 'Present' | 'On Leave' | 'Deputed' | 'Absent';
+  status: 'PRESENT' | 'ABSENT' | 'ON_LEAVE' | 'NOT_MARKED' | 'FIELD_DUTY' | 'DEPLETED' | string;
+  attendanceStatus?: 'Present' | 'Absent' | 'On Leave' | 'Not Marked' | 'Deputed';
+  lastAttendanceUpdate?: string;
+  lastMarkedBy?: string;
   patientLoadToday?: number;
   burnoutRisk: 'LOW' | 'MODERATE' | 'HIGH' | 'CRITICAL';
   contact: string;
+  isSyntheticDemo?: boolean;
 }
 
 export interface WorkforceSummary {
@@ -245,7 +273,7 @@ export interface StatusTransitionRecord {
 export interface SupplyChainAuditEntry {
   transactionId: string;
   entityId: string;
-  entityType: 'WAREHOUSE_INDENT' | 'INTER_PHC_TRANSFER' | 'INVENTORY_DISPENSE' | 'OCR_VERIFY';
+  entityType: 'WAREHOUSE_INDENT' | 'INTER_PHC_TRANSFER' | 'INVENTORY_DISPENSE' | 'OCR_VERIFY' | 'STAFF_ATTENDANCE';
   medicineName: string;
   medicineId?: string;
   quantity: number;
@@ -255,6 +283,7 @@ export interface SupplyChainAuditEntry {
   timestamp: string;
   previousStatus: string;
   newStatus: string;
+  actor?: string;
   stockImpactSummary?: string;
   isHistoricalDemo?: boolean;
   notes?: string;
@@ -280,6 +309,7 @@ export interface LogisticsOrder {
   actualDeliveryDate?: string;
   cancelledDate?: string;
   cancelReason?: string;
+  cancellationReason?: string;
   consignmentId?: string;
   priority: 'ROUTINE' | 'URGENT' | 'EMERGENCY_REPLENISHMENT';
   notes?: string;
@@ -327,12 +357,18 @@ export interface RedistributionOpportunity {
   sourceMedicineId?: string;
   targetMedicineId?: string;
   createdDate?: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  approvedBy?: string;
   approvedAt?: string;
   dispatchedAt?: string;
   completedAt?: string;
   receivedAt?: string;
+  rejectedBy?: string;
   rejectedAt?: string;
+  rejectionReason?: string;
   cancelledAt?: string;
+  cancellationReason?: string;
   statusReason?: string;
   isHistoricalDemo?: boolean;
   statusHistory?: StatusTransitionRecord[];
@@ -538,7 +574,7 @@ export interface AIChatMessage {
 
 export interface OfflineQueueItem {
   id: string;
-  module: 'voice' | 'medicine' | 'orders' | 'records' | 'alerts' | 'redistribution';
+  module: 'voice' | 'medicine' | 'orders' | 'records' | 'alerts' | 'redistribution' | 'attendance';
   moduleLabel: string;
   action: string;
   entityName: string;

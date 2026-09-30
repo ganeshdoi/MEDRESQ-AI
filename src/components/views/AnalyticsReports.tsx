@@ -40,6 +40,15 @@ import {
   MOCK_BED_OCCUPANCY_HISTORY,
   MOCK_OCR_ACCURACY_DATA
 } from '../../data/mockData.ts';
+import {
+  getCanonicalMedicineInventoryMetrics,
+  getCanonicalAlertMetrics,
+  getCanonicalOrderMetrics
+} from '../../utils/datasetMetrics.ts';
+import {
+  evaluateMedicineThresholdAndReplenishment,
+  calculateMedicineForecast
+} from '../../utils/inventoryForecast.ts';
 
 type ExportScope =
   | 'all'
@@ -48,7 +57,8 @@ type ExportScope =
   | 'usage'
   | 'occupancy'
   | 'transactions'
-  | 'ocr';
+  | 'ocr'
+  | 'attendance';
 
 type ActiveLedgerTab = 'inventory' | 'usage' | 'transactions';
 type HistoricalWindow = '6m' | '12m';
@@ -92,10 +102,103 @@ export const AnalyticsReports: React.FC = () => {
     medicines,
     capacity,
     workforce,
+    attendanceRecords,
     orders,
     redistributions,
+    alerts,
+    proactiveStockAlerts,
+    inchargeSession,
     showNotification
   } = useApp();
+  const activeMedicalOfficerName =
+    inchargeSession?.inchargeName || selectedPHC.medicalOfficerInCharge;
+
+  // Canonical live metrics shared with the rest of the UI
+  const canonicalMedMetrics = useMemo(
+    () => getCanonicalMedicineInventoryMetrics(medicines),
+    [medicines]
+  );
+  const canonicalAlertMetrics = useMemo(
+    () => getCanonicalAlertMetrics(alerts, proactiveStockAlerts),
+    [alerts, proactiveStockAlerts]
+  );
+  const canonicalOrderMetrics = useMemo(
+    () => getCanonicalOrderMetrics(orders, redistributions),
+    [orders, redistributions]
+  );
+
+  // Live evaluated inventory rows (for critical shortages & expiry risks)
+  const evaluatedInventoryRows = useMemo(() => {
+    return medicines.map((med) => {
+      const ev = evaluateMedicineThresholdAndReplenishment(med);
+      const fc = calculateMedicineForecast({ medicine: med, phcName: selectedPHC.name });
+      const activeBatch =
+        fc.batchesBreakdown.find((b) => !b.isExpired && b.quantity > 0) ||
+        fc.batchesBreakdown[0];
+      const primaryBatchNumber = activeBatch?.batchNumber || med.batchNumber;
+      const primaryExpiryDate = activeBatch?.expiryDate || med.expiryDate;
+      const daysToPrimaryExpiry = activeBatch?.daysToExpiry ?? 120;
+      const fefoPriority =
+        daysToPrimaryExpiry <= 45
+          ? ('URGENT' as const)
+          : daysToPrimaryExpiry <= 90
+          ? ('EXPIRING_SOON' as const)
+          : (med.fefoPriority || ('NORMAL' as const));
+      const fefo = {
+        primaryBatchNumber,
+        primaryExpiryDate,
+        daysToPrimaryExpiry,
+        fefoPriority,
+        usableStockUnits: ev.usableStock,
+        expiredStockUnits: ev.expiredBatchStock
+      };
+      return { med, ev, fefo };
+    });
+  }, [medicines, selectedPHC.name]);
+
+  const criticalShortageRows = useMemo(
+    () => evaluatedInventoryRows.filter((r) => r.ev.riskLevel === 'CRITICAL'),
+    [evaluatedInventoryRows]
+  );
+
+  const expiryRiskRows = useMemo(
+    () =>
+      evaluatedInventoryRows.filter(
+        (r) =>
+          r.fefo.fefoPriority === 'URGENT' ||
+          r.fefo.fefoPriority === 'EXPIRING_SOON' ||
+          r.fefo.expiredStockUnits > 0
+      ),
+    [evaluatedInventoryRows]
+  );
+
+  const activeUnresolvedAlerts = useMemo(
+    () => alerts.filter((a) => Boolean(a && a.id && a.status !== 'RESOLVED')),
+    [alerts]
+  );
+
+  const transferLifecycleSummary = useMemo(() => {
+    const pendingReview = redistributions.filter((r) => r.status === 'PROPOSED').length;
+    const approved = redistributions.filter((r) => r.status === 'APPROVED').length;
+    const dispatched = redistributions.filter(
+      (r) => r.status === 'IN_TRANSIT' || r.status === 'DISPATCHED'
+    ).length;
+    const received = redistributions.filter(
+      (r) => r.status === 'COMPLETED' || r.status === 'RECEIVED'
+    ).length;
+    const rejected = redistributions.filter((r) => r.status === 'REJECTED').length;
+    return {
+      total: redistributions.length,
+      pendingReview,
+      approved,
+      dispatched,
+      received,
+      rejected
+    };
+  }, [redistributions]);
+
+  const healthyMedCount = canonicalMedMetrics.normalCount + canonicalMedMetrics.surplusCount;
+  const healthyMedPct = canonicalMedMetrics.healthyStockPercentage;
   const [reportRange, setReportRange] = useState('September 2026 (Monthly Log)');
   const [historicalWindow, setHistoricalWindow] = useState<HistoricalWindow>('6m');
   const [exportScope, setExportScope] = useState<ExportScope>('all');
@@ -377,19 +480,21 @@ export const AnalyticsReports: React.FC = () => {
   // Determine whether a section is included based on targetScope & checkboxes
   const shouldIncludeSection = (
     targetScope: ExportScope,
-    section: 'inventory' | 'usage' | 'occupancy' | 'transactions' | 'ocr'
+    section: 'inventory' | 'usage' | 'occupancy' | 'transactions' | 'ocr' | 'attendance'
   ): boolean => {
     if (targetScope === 'inventory') return section === 'inventory';
     if (targetScope === 'usage') return section === 'usage' || section === 'occupancy';
     if (targetScope === 'occupancy') return section === 'occupancy';
     if (targetScope === 'transactions') return section === 'transactions';
     if (targetScope === 'ocr') return section === 'ocr';
+    if (targetScope === 'attendance') return section === 'attendance';
     if (targetScope === 'historical') {
       if (section === 'usage') return includedDatasets.consumptionHistory;
       if (section === 'occupancy') return includedDatasets.bedOccupancyHistory;
       if (section === 'inventory') return includedDatasets.inventoryLedger;
       if (section === 'transactions') return includedDatasets.transactionLogs;
       if (section === 'ocr') return includedDatasets.ocrAuditMetrics;
+      if (section === 'attendance') return true;
     }
     return true; // 'all'
   };
@@ -433,7 +538,7 @@ export const AnalyticsReports: React.FC = () => {
           escapeCSV('District & Block'),
           escapeCSV(`${selectedPHC.district} / ${selectedPHC.block}`),
           escapeCSV('Medical Officer I/C'),
-          escapeCSV(selectedPHC.medicalOfficerInCharge)
+          escapeCSV(activeMedicalOfficerName)
         ].join(',')
       );
       lines.push(
@@ -458,6 +563,145 @@ export const AnalyticsReports: React.FC = () => {
           escapeCSV(historicalSummary.totalDispensed)
         ].join(',')
       );
+      lines.push('');
+
+      // Canonical Operational Summary (Live State)
+      lines.push(
+        [escapeCSV('SECTION 0: LIVE OPERATIONAL & INVENTORY SUMMARY (CANONICAL STATE)')].join(',')
+      );
+      lines.push(
+        [
+          'Total Tracked Medicines',
+          'Critical Shortages',
+          'Low / Warning Stock',
+          'Healthy Stock Items',
+          'Healthy Stock Availability (%)',
+          'Expiry Risk Items',
+          'Pending Transfer Reviews',
+          'Active Warehouse Orders',
+          'Active System Alerts'
+        ]
+          .map(escapeCSV)
+          .join(',')
+      );
+      lines.push(
+        [
+          canonicalMedMetrics.totalTrackedItems,
+          canonicalMedMetrics.criticalCount,
+          canonicalMedMetrics.warningCount,
+          healthyMedCount,
+          `${healthyMedPct}%`,
+          expiryRiskRows.length,
+          transferLifecycleSummary.pendingReview,
+          canonicalOrderMetrics.activeOrdersCount,
+          canonicalAlertMetrics.activeSystemAlertsCount
+        ]
+          .map(escapeCSV)
+          .join(',')
+      );
+      lines.push('');
+
+      // Critical Shortages Summary
+      lines.push([escapeCSV('SECTION 0B: CRITICAL SHORTAGES REQUIRING ACTION')].join(','));
+      lines.push(
+        [
+          'Medicine ID',
+          'Medicine Name',
+          'Usable Stock',
+          'Unit',
+          'Min / Safety Threshold',
+          'Days of Cover',
+          'Daily Burn Rate',
+          'Recommended Replenishment Qty'
+        ]
+          .map(escapeCSV)
+          .join(',')
+      );
+      if (criticalShortageRows.length === 0) {
+        lines.push([escapeCSV('None'), escapeCSV('No critical shortages at this time')].join(','));
+      } else {
+        criticalShortageRows.forEach(({ med, ev }) => {
+          lines.push(
+            [
+              med.id,
+              med.name,
+              ev.usableStock,
+              med.unit,
+              ev.minThreshold,
+              ev.usableDaysOfCover !== null ? `${ev.usableDaysOfCover}d` : 'N/A',
+              ev.dailyConsumption,
+              ev.recommendedOrderQty
+            ]
+              .map(escapeCSV)
+              .join(',')
+          );
+        });
+      }
+      lines.push('');
+
+      // Expiry Risks & FEFO Priority Summary
+      lines.push([escapeCSV('SECTION 0C: EXPIRY RISKS & FEFO PRIORITY BATCHES')].join(','));
+      lines.push(
+        [
+          'Medicine ID',
+          'Medicine Name',
+          'FEFO Earliest Usable Batch',
+          'Expiry Date',
+          'Days Remaining',
+          'FEFO Priority',
+          'Usable Stock',
+          'Expired Stock Excluded'
+        ]
+          .map(escapeCSV)
+          .join(',')
+      );
+      if (expiryRiskRows.length === 0) {
+        lines.push([escapeCSV('None'), escapeCSV('No near-expiry or expired batches detected')].join(','));
+      } else {
+        expiryRiskRows.forEach(({ med, fefo }) => {
+          lines.push(
+            [
+              med.id,
+              med.name,
+              fefo.primaryBatchNumber,
+              fefo.primaryExpiryDate,
+              `${fefo.daysToPrimaryExpiry}d`,
+              fefo.fefoPriority,
+              fefo.usableStockUnits,
+              fefo.expiredStockUnits
+            ]
+              .map(escapeCSV)
+              .join(',')
+          );
+        });
+      }
+      lines.push('');
+
+      // Active Alerts Summary
+      lines.push([escapeCSV('SECTION 0D: ACTIVE UNRESOLVED ALERTS')].join(','));
+      lines.push(
+        ['Alert ID', 'Alert Title', 'Severity', 'Status', 'Affected Facility / PHC', 'Reason / Description']
+          .map(escapeCSV)
+          .join(',')
+      );
+      if (activeUnresolvedAlerts.length === 0) {
+        lines.push([escapeCSV('None'), escapeCSV('No active unresolved alerts')].join(','));
+      } else {
+        activeUnresolvedAlerts.forEach((al) => {
+          lines.push(
+            [
+              al.id,
+              al.title,
+              al.category,
+              al.status,
+              al.facilityName || al.phcName || selectedPHC.name,
+              al.description
+            ]
+              .map(escapeCSV)
+              .join(',')
+          );
+        });
+      }
       lines.push('');
 
       // Section 1: Historical Monthly Resource Consumption & OPD Volume
@@ -564,23 +808,26 @@ export const AnalyticsReports: React.FC = () => {
         );
 
         filteredMedicines.forEach((med) => {
-          const monthlyUsage = med.dailyConsumption * 30;
+          const matchedRow = evaluatedInventoryRows.find((r) => r.med.id === med.id);
+          const ev = matchedRow?.ev || evaluateMedicineThresholdAndReplenishment(med);
+          const fefo = matchedRow?.fefo;
+          const monthlyUsage = ev.dailyConsumption * 30;
           lines.push(
             [
               med.id,
               med.name,
               med.category,
-              med.batchNumber,
+              fefo?.primaryBatchNumber || med.batchNumber,
               med.unit,
-              med.currentStock,
-              med.dailyConsumption,
+              ev.usableStock,
+              ev.dailyConsumption,
               monthlyUsage,
               med.forecast30Day,
-              med.minStockLevel,
-              med.projectedStockoutDays,
-              med.stockoutRisk,
-              med.expiryDate,
-              med.fefoPriority,
+              ev.minThreshold,
+              ev.usableDaysOfCover ?? med.projectedStockoutDays,
+              ev.riskLevel,
+              fefo?.primaryExpiryDate || med.expiryDate,
+              fefo?.fefoPriority || med.fefoPriority,
               med.sourceWarehouse
             ]
               .map(escapeCSV)
@@ -684,7 +931,9 @@ export const AnalyticsReports: React.FC = () => {
             'Recipient PHC',
             'Quantity',
             'Transit Distance (km)',
-            'Transfer Status'
+            'Transfer Status',
+            'Reviewed / Approved By',
+            'Timestamp / Rejection Reason'
           ]
             .map(escapeCSV)
             .join(',')
@@ -694,8 +943,13 @@ export const AnalyticsReports: React.FC = () => {
           const donor = tr.sourcePHCName || tr.sourcePHC?.name || 'Donor PHC';
           const recipient = tr.destinationPHCName || tr.targetPHC?.name || 'Recipient PHC';
           const dist = tr.transitDistanceKm ?? 0;
+          const reviewer = tr.approvedBy || tr.rejectedBy || tr.reviewedBy || activeMedicalOfficerName;
+          const details =
+            tr.status === 'REJECTED'
+              ? `Rejected: ${tr.rejectionReason || 'Clinical review'}`
+              : tr.completedAt || tr.approvedAt || tr.reviewedAt || 'Pending MO Review';
           lines.push(
-            [tr.id, tr.medicineName, donor, recipient, qty, dist, tr.status]
+            [tr.id, tr.medicineName, donor, recipient, qty, dist, tr.status, reviewer, details]
               .map(escapeCSV)
               .join(',')
           );
@@ -735,6 +989,40 @@ export const AnalyticsReports: React.FC = () => {
               .join(',')
           );
         });
+        lines.push('');
+      }
+
+      // Section 7: Staff Attendance Report (Date, Staff, Designation, Status, PHC, Marked By, Timestamp)
+      if (shouldIncludeSection(targetScope, 'attendance')) {
+        lines.push(
+          [
+            escapeCSV(
+              'SECTION 7: STAFF ATTENDANCE LEDGER (SYNTHETIC DEMO PROTOTYPE DATA)'
+            )
+          ].join(',')
+        );
+        lines.push(
+          ['Date', 'Staff', 'Designation', 'Status', 'PHC', 'Marked By', 'Timestamp']
+            .map(escapeCSV)
+            .join(',')
+        );
+        (attendanceRecords || [])
+          .filter((r) => r.phcId === selectedPHC.id)
+          .forEach((rec) => {
+            lines.push(
+              [
+                rec.date,
+                `${rec.staffName} (${rec.staffId})`,
+                rec.designation,
+                rec.status,
+                rec.phcName || selectedPHC.name,
+                rec.markedBy,
+                rec.markedAt
+              ]
+                .map(escapeCSV)
+                .join(',')
+            );
+          });
       }
 
       const csvContent = '\uFEFF' + lines.join('\n');
@@ -822,44 +1110,44 @@ export const AnalyticsReports: React.FC = () => {
         22.5
       );
       doc.text(
-        `MO In-Charge (Simulated): ${selectedPHC.medicalOfficerInCharge} | Generated: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`,
+        `MO In-Charge: ${activeMedicalOfficerName} | Generated: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST`,
         margin,
         27.5
       );
       doc.setTextColor(253, 230, 138);
       doc.text(
-        'Disclaimer: Contains synthetic historical baselines & in-session prototype state for demonstration only.',
+        'Disclaimer: Contains synthetic historical baselines & live in-session prototype state for demonstration only.',
         margin,
         32.5
       );
 
       y = 40;
 
-      // Executive Summary KPI Box
+      // Executive Summary KPI Box (Live Canonical State)
       doc.setFillColor(248, 250, 252);
       doc.setDrawColor(203, 213, 225);
       doc.roundedRect(margin, y, contentWidth, 18, 2, 2, 'FD');
 
       const kpiItems = [
         {
-          label: 'HISTORICAL DISPENSED',
-          value: `${historicalSummary.totalDispensed.toLocaleString()} Units`
+          label: 'INVENTORY SUMMARY',
+          value: `${canonicalMedMetrics.totalTrackedItems} Tracked (${healthyMedPct}% OK)`
         },
         {
-          label: 'CUMULATIVE OPD LOAD',
-          value: `${historicalSummary.totalOpdEncounters.toLocaleString()} Visits`
+          label: 'CRITICAL SHORTAGES',
+          value: `${canonicalMedMetrics.criticalCount} Critical · ${canonicalMedMetrics.warningCount} Low`
         },
         {
-          label: 'MEAN BED OCCUPANCY',
-          value: `${historicalSummary.avgInpatientOccupancy}% (${capacity.totalBeds} Beds)`
+          label: 'EXPIRY RISKS (FEFO)',
+          value: `${expiryRiskRows.length} Near-Expiry/Expired`
         },
         {
-          label: 'STAFF ON DUTY',
-          value: `${workforce.staffPresentToday}/${workforce.totalStaffSanctioned} Present`
+          label: 'TRANSFERS & ORDERS',
+          value: `${transferLifecycleSummary.pendingReview} Review · ${canonicalOrderMetrics.activeOrdersCount} Orders`
         },
         {
-          label: 'OCR DEMO BENCHMARK',
-          value: '96.8% (Simulated)'
+          label: 'ACTIVE ALERTS',
+          value: `${canonicalAlertMetrics.activeSystemAlertsCount} Unresolved`
         }
       ];
 
@@ -1048,30 +1336,34 @@ export const AnalyticsReports: React.FC = () => {
             doc.rect(margin, y, contentWidth, 6.8, 'F');
           }
 
+          const matchedRow = evaluatedInventoryRows.find((r) => r.med.id === med.id);
+          const ev = matchedRow?.ev || evaluateMedicineThresholdAndReplenishment(med);
+          const fefo = matchedRow?.fefo;
+
           doc.setFont('helvetica', 'normal');
           doc.setFontSize(7);
           doc.setTextColor(15, 23, 42);
 
           const truncatedName =
             med.name.length > 36 ? med.name.substring(0, 34) + '...' : med.name;
-          const monthlyBurn = med.dailyConsumption * 30;
+          const monthlyBurn = ev.dailyConsumption * 30;
 
           doc.text(truncatedName, cols[0].x, y + 4.6);
-          doc.text(med.batchNumber, cols[1].x, y + 4.6);
-          doc.text(`${med.currentStock.toLocaleString()} ${med.unit}`, cols[2].x, y + 4.6);
+          doc.text(fefo?.primaryBatchNumber || med.batchNumber, cols[1].x, y + 4.6);
+          doc.text(`${ev.usableStock.toLocaleString()} ${med.unit}`, cols[2].x, y + 4.6);
           doc.text(`${monthlyBurn.toLocaleString()} / mo`, cols[3].x, y + 4.6);
-          doc.text(`${med.projectedStockoutDays}d`, cols[4].x, y + 4.6);
-          doc.text(med.expiryDate, cols[5].x, y + 4.6);
+          doc.text(`${ev.usableDaysOfCover ?? med.projectedStockoutDays}d`, cols[4].x, y + 4.6);
+          doc.text(fefo?.primaryExpiryDate || med.expiryDate, cols[5].x, y + 4.6);
 
           doc.setFont('helvetica', 'bold');
-          if (med.stockoutRisk === 'CRITICAL') {
+          if (ev.riskLevel === 'CRITICAL') {
             doc.setTextColor(190, 18, 60);
-          } else if (med.stockoutRisk === 'WARNING') {
+          } else if (ev.riskLevel === 'WARNING') {
             doc.setTextColor(180, 83, 9);
           } else {
             doc.setTextColor(4, 120, 87);
           }
-          doc.text(med.stockoutRisk, cols[6].x, y + 4.6);
+          doc.text(ev.riskLevel, cols[6].x, y + 4.6);
 
           doc.setDrawColor(226, 232, 240);
           doc.line(margin, y + 6.8, pageWidth - margin, y + 6.8);
@@ -1080,6 +1372,76 @@ export const AnalyticsReports: React.FC = () => {
 
         y += 7;
       }
+
+      // SECTION 2B: CRITICAL SHORTAGES, EXPIRY RISKS, TRANSFERS & ACTIVE ALERTS SUMMARY
+      checkPageBreak(42);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10.5);
+      doc.setTextColor(15, 23, 42);
+      doc.text(
+        '2B. Critical Shortages, Expiry Risks, Transfer Lifecycle & Active Alerts',
+        margin,
+        y
+      );
+      y += 5;
+
+      doc.setFillColor(248, 250, 252);
+      doc.setDrawColor(203, 213, 225);
+      doc.roundedRect(margin, y, contentWidth, 30, 1.5, 1.5, 'FD');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.2);
+      doc.setTextColor(190, 18, 60);
+      doc.text(
+        `• Critical Shortages (${criticalShortageRows.length}): ${
+          criticalShortageRows.length > 0
+            ? criticalShortageRows
+                .slice(0, 4)
+                .map(({ med, ev }) => `${med.name.split(' ')[0]} (${ev.usableStock}/${ev.minThreshold} ${med.unit})`)
+                .join(', ')
+            : 'None'
+        }`,
+        margin + 3,
+        y + 6
+      );
+
+      doc.setTextColor(180, 83, 9);
+      doc.text(
+        `• Expiry Risks (${expiryRiskRows.length}): ${
+          expiryRiskRows.length > 0
+            ? expiryRiskRows
+                .slice(0, 4)
+                .map(({ med, fefo }) => `${med.name.split(' ')[0]} [${fefo.primaryBatchNumber}: ${fefo.daysToPrimaryExpiry}d]`)
+                .join(', ')
+            : 'None'
+        }`,
+        margin + 3,
+        y + 13
+      );
+
+      doc.setTextColor(15, 23, 42);
+      doc.text(
+        `• Transfers & Recommendations (${transferLifecycleSummary.total} Total): ${transferLifecycleSummary.pendingReview} Pending Review · ${transferLifecycleSummary.approved} Approved · ${transferLifecycleSummary.dispatched} Dispatched · ${transferLifecycleSummary.received} Received · ${transferLifecycleSummary.rejected} Rejected`,
+        margin + 3,
+        y + 20
+      );
+
+      doc.setTextColor(30, 64, 175);
+      doc.text(
+        `• Active Unresolved Alerts (${activeUnresolvedAlerts.length}): ${
+          activeUnresolvedAlerts.length > 0
+            ? activeUnresolvedAlerts
+                .slice(0, 3)
+                .map((a) => `${a.title} [${a.category}/${a.status}]`)
+                .join(' | ')
+                .substring(0, 115)
+            : 'All operational alerts resolved'
+        }`,
+        margin + 3,
+        y + 27
+      );
+
+      y += 35;
 
       // SECTION 3: RECENT INVENTORY TRANSACTION & DISPENSING LOGS
       if (shouldIncludeSection(targetScope, 'transactions')) {
@@ -1313,6 +1675,90 @@ export const AnalyticsReports: React.FC = () => {
             <FileText className="w-3.5 h-3.5" />
             <span>{isExportingPDF ? 'Generating PDF...' : 'Export PDF'}</span>
           </button>
+        </div>
+      </div>
+
+      {/* Live Canonical Operational Snapshot Included in Every CSV / PDF Export */}
+      <div className="bg-white rounded-xl border border-slate-200/90 p-4 sm:p-5 shadow-xs space-y-3.5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+          <div>
+            <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+              <span>Live Canonical Report Snapshot ({selectedPHC.name} · {selectedPHC.district} District)</span>
+            </h2>
+            <p className="text-xs text-slate-600 mt-0.5">
+              All CSV and PDF exports dynamically pull from the current application state below. Medical Officer In-Charge: <strong>{activeMedicalOfficerName}</strong>.
+            </p>
+          </div>
+          <span className="text-[11px] font-mono text-slate-500">
+            Facility Code: <strong className="text-slate-800">{selectedPHC.code}</strong>
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 text-xs">
+          <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+            <span className="text-[10px] font-mono uppercase text-slate-500 font-bold block">
+              Inventory Summary
+            </span>
+            <div className="text-lg font-bold font-mono text-slate-900 mt-1">
+              {canonicalMedMetrics.totalTrackedItems} Items ({healthyMedPct}% OK)
+            </div>
+            <span className="text-[11px] text-slate-600">
+              {healthyMedCount} Healthy · {canonicalMedMetrics.warningCount} Low
+            </span>
+          </div>
+
+          <div className="p-3 rounded-xl bg-rose-50/70 border border-rose-200">
+            <span className="text-[10px] font-mono uppercase text-rose-800 font-bold block">
+              Critical Shortages
+            </span>
+            <div className="text-lg font-bold font-mono text-rose-700 mt-1">
+              {canonicalMedMetrics.criticalCount} Critical
+            </div>
+            <span className="text-[11px] text-rose-900 truncate block">
+              {criticalShortageRows.length > 0
+                ? criticalShortageRows.map((r) => r.med.name.split(' ')[0]).join(', ')
+                : 'No critical stockouts'}
+            </span>
+          </div>
+
+          <div className="p-3 rounded-xl bg-amber-50/70 border border-amber-200">
+            <span className="text-[10px] font-mono uppercase text-amber-900 font-bold block">
+              Expiry Risks (FEFO)
+            </span>
+            <div className="text-lg font-bold font-mono text-amber-800 mt-1">
+              {expiryRiskRows.length} At Risk
+            </div>
+            <span className="text-[11px] text-amber-900 truncate block">
+              {expiryRiskRows.length > 0
+                ? expiryRiskRows.map((r) => `${r.med.name.split(' ')[0]} (${r.fefo.daysToPrimaryExpiry}d)`).join(', ')
+                : 'All batches within safe window'}
+            </span>
+          </div>
+
+          <div className="p-3 rounded-xl bg-blue-50/70 border border-blue-200">
+            <span className="text-[10px] font-mono uppercase text-blue-900 font-bold block">
+              Transfers &amp; Orders
+            </span>
+            <div className="text-lg font-bold font-mono text-blue-800 mt-1">
+              {transferLifecycleSummary.pendingReview} Pending Review
+            </div>
+            <span className="text-[11px] text-blue-900">
+              {transferLifecycleSummary.approved + transferLifecycleSummary.dispatched + transferLifecycleSummary.received} Active/Done · {canonicalOrderMetrics.activeOrdersCount} Orders
+            </span>
+          </div>
+
+          <div className="p-3 rounded-xl bg-purple-50/70 border border-purple-200">
+            <span className="text-[10px] font-mono uppercase text-purple-900 font-bold block">
+              Active Alerts
+            </span>
+            <div className="text-lg font-bold font-mono text-purple-800 mt-1">
+              {canonicalAlertMetrics.activeSystemAlertsCount} Unresolved
+            </div>
+            <span className="text-[11px] text-purple-900">
+              {canonicalAlertMetrics.criticalSystemAlertsCount} Critical · {canonicalAlertMetrics.warningSystemAlertsCount} Warning
+            </span>
+          </div>
         </div>
       </div>
 
