@@ -155,7 +155,13 @@ interface AppContextType {
   // AI & Chat
   chatMessages: AIChatMessage[];
   isChatLoading: boolean;
-  sendChatMessage: (content: string, persona?: string, taskComplexity?: string) => Promise<void>;
+  assistantError: string | null;
+  clearAssistantError: () => void;
+  isGeminiAssistantOpen: boolean;
+  setIsGeminiAssistantOpen: (open: boolean) => void;
+  openGeminiAssistant: (initialPrompt?: string) => void;
+  toggleGeminiAssistant: () => void;
+  sendChatMessage: (content: string, persona?: string, taskComplexity?: string, pageContextOverride?: string) => Promise<void>;
   clearChatHistory: () => void;
 
   // Audio Transcription with language-aware Gemini Audio ASR (en-IN, hi-IN, ta-IN, te-IN)
@@ -439,9 +445,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
 
-  // Chat state
+  // Chat & Gemini Assistant Drawer state
   const [chatMessages, setChatMessages] = useState<AIChatMessage[]>(INITIAL_CHAT_MESSAGES);
   const [isChatLoading, setIsChatLoading] = useState<boolean>(false);
+  const [assistantError, setAssistantError] = useState<string | null>(null);
+  const [isGeminiAssistantOpen, setIsGeminiAssistantOpen] = useState<boolean>(false);
+
+  const clearAssistantError = () => setAssistantError(null);
+  const toggleGeminiAssistant = () => setIsGeminiAssistantOpen((prev) => !prev);
 
   // Audio transcription state
   const [isTranscribing, setIsTranscribing] = useState<boolean>(false);
@@ -1967,11 +1978,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // Multi-turn Gemini Chatbot
+  // Multi-turn Gemini Chatbot & Top-Right Gemini Operational Assistant
   const sendChatMessage = async (
     content: string,
     persona: string = 'clinical_officer',
-    taskComplexity: string = 'general'
+    taskComplexity: string = 'general',
+    pageContextOverride?: string
   ) => {
     if (!content.trim()) return;
 
@@ -1987,8 +1999,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const updatedMessages = [...chatMessages, userMessage];
     setChatMessages(updatedMessages);
     setIsChatLoading(true);
+    setAssistantError(null);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
 
     try {
+      if (isOfflineMode) {
+        throw new Error('OFFLINE_MODE');
+      }
+
       // Save user message to Firestore if authenticated
       if (currentUser) {
         try {
@@ -2005,21 +2025,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       }
 
-      // Format for server API
-      const apiMessages = updatedMessages.map(m => ({
+      // Keep recent conversation window to avoid sending bulky payloads
+      const apiMessages = updatedMessages.slice(-12).map((m) => ({
         role: m.role,
         text: m.content
       }));
 
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (inchargeSessionRef.current?.sessionToken) {
+        headers.Authorization = `Bearer ${inchargeSessionRef.current.sessionToken}`;
+      }
+
       const res = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
+        signal: controller.signal,
         body: JSON.stringify({
           messages: apiMessages,
           persona,
           taskComplexity,
           phcId: selectedPHC.id,
-          phcName: selectedPHC.name
+          phcName: selectedPHC.name,
+          language,
+          activeModule,
+          role,
+          pageContext: pageContextOverride || `Active Module: ${activeModule} (${selectedPHC.name})`
         })
       });
 
@@ -2028,16 +2058,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       const data = await res.json();
+      const replyText = typeof data?.reply === 'string' ? data.reply.trim() : '';
+      if (!replyText) {
+        throw new Error('Empty response from Gemini Assistant');
+      }
+
       const modelMessage: AIChatMessage = {
         id: `model-${Date.now()}`,
         role: 'model',
-        content: data.reply || 'No response available.',
-        modelUsed: data.modelUsed || 'gemini-3.8-flash',
+        content: replyText,
+        modelUsed: data.modelUsed || 'gemini-3-flash-preview',
         persona,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
 
-      setChatMessages(prev => [...prev, modelMessage]);
+      setChatMessages((prev) => [...prev, modelMessage]);
 
       // Save model reply to Firestore if authenticated
       if (currentUser) {
@@ -2057,22 +2092,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     } catch (error) {
       console.error('Chat error:', error);
+      const unavailableMsg = 'Gemini is temporarily unavailable. Please try again.';
+      setAssistantError(unavailableMsg);
       const errorMessage: AIChatMessage = {
         id: `error-${Date.now()}`,
         role: 'model',
-        content: 'System notice: Connection to Gemini service timed out. Please check your network or try again.',
-        modelUsed: 'system-offline-fallback',
+        content: unavailableMsg,
+        modelUsed: 'gemini-unavailable',
         persona,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
-      setChatMessages(prev => [...prev, errorMessage]);
+      setChatMessages((prev) => [...prev, errorMessage]);
     } finally {
+      clearTimeout(timeoutId);
       setIsChatLoading(false);
+    }
+  };
+
+  const openGeminiAssistant = (initialPrompt?: string) => {
+    setIsGeminiAssistantOpen(true);
+    if (initialPrompt && initialPrompt.trim()) {
+      void sendChatMessage(initialPrompt.trim(), 'clinical_officer', 'general');
     }
   };
 
   const clearChatHistory = () => {
     setChatMessages(INITIAL_CHAT_MESSAGES);
+    setAssistantError(null);
     notify('Chat history cleared.');
   };
 
@@ -3828,9 +3874,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         signOutIncharge,
         requireAuthorizedAccess,
 
-        // Chat
+        // Chat & Gemini AI Assistant
         chatMessages,
         isChatLoading,
+        assistantError,
+        clearAssistantError,
+        isGeminiAssistantOpen,
+        setIsGeminiAssistantOpen,
+        openGeminiAssistant,
+        toggleGeminiAssistant,
         sendChatMessage,
         clearChatHistory,
 

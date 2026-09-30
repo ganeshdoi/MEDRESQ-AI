@@ -28,7 +28,8 @@ import {
   UserPlus,
   HelpCircle,
   RefreshCw,
-  Globe
+  Globe,
+  Sparkles
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.tsx';
 import { SUPPORTED_LANGUAGES, type SupportedLanguageCode } from '../i18n/index.ts';
@@ -76,6 +77,8 @@ export const TopBar: React.FC = () => {
     openAuthModal,
     authenticatePHCIncharge,
     signOutIncharge,
+    isGeminiAssistantOpen,
+    toggleGeminiAssistant,
     language,
     setLanguage,
     t
@@ -974,6 +977,30 @@ export const TopBar: React.FC = () => {
             </div>
           )}
         </div>
+
+        {/* Top-Right ✨ Gemini AI Operational Assistant Button */}
+        <button
+          type="button"
+          id="topbar-gemini-ai-btn"
+          onClick={() => {
+            toggleGeminiAssistant();
+            setIsBellOpen(false);
+            setIsHelpOpen(false);
+            setIsPhcPickerOpen(false);
+            setIsSearchOpen(false);
+          }}
+          aria-expanded={isGeminiAssistantOpen}
+          aria-label="Open Gemini AI Operational Assistant"
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all whitespace-nowrap cursor-pointer shrink-0 shadow-2xs ${
+            isGeminiAssistantOpen
+              ? 'bg-slate-900 text-teal-300 border-teal-500 ring-2 ring-teal-500/30'
+              : 'bg-linear-to-r from-teal-900 via-teal-800 to-emerald-800 hover:from-teal-950 hover:to-emerald-900 text-white border-teal-700'
+          }`}
+          title="Open ✨ Gemini AI Operational Assistant (Inventory, FEFO, Transfers, Alerts & Forecasts)"
+        >
+          <Sparkles className="w-3.5 h-3.5 text-amber-300 shrink-0" aria-hidden="true" />
+          <span>✨ Gemini AI</span>
+        </button>
 
         {/* Centralized Language Selector (English, हिन्दी, தமிழ், తెలుగు) */}
         <div className="flex items-center gap-1.5 px-2 py-1 rounded-xl bg-slate-50 border border-slate-200 shrink-0">
